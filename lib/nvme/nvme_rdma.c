@@ -63,6 +63,8 @@
 #define NVME_RDMA_DEFAULT_TX_SGE		2
 #define NVME_RDMA_DEFAULT_RX_SGE		1
 
+/* RDMA CQ error ideitify ID for user to handle */
+#define NVME_RDMA_CQ_ERROR_IDENTIFY_CODE (-2)
 
 /* Max number of NVMe-oF SGL descriptors supported by the host */
 #define NVME_RDMA_MAX_SGL_DESCRIPTORS		16
@@ -1742,9 +1744,9 @@ nvme_rdma_qpair_process_completions(struct spdk_nvme_qpair *qpair,
 
 		for (i = 0; i < rc; i++) {
 			if (wc[i].status) {
-				SPDK_ERRLOG("CQ error on Queue Pair %p, Response Index %lu (%d): %s\n",
-					    qpair, wc[i].wr_id, wc[i].status, ibv_wc_status_str(wc[i].status));
-				return -1;
+				SPDK_ERRLOG("CQ error on Queue Pair %p, Opcode %u, Response Index %lu (%d): %s\n",
+					    qpair, wc[i].opcode, wc[i].wr_id, wc[i].status, ibv_wc_status_str(wc[i].status));
+				return NVME_RDMA_CQ_ERROR_IDENTIFY_CODE;
 			}
 
 			switch (wc[i].opcode) {
