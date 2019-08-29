@@ -395,6 +395,7 @@ _nvme_ns_cmd_rw(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 
 	req = nvme_allocate_request(qpair, payload, lba_count * sector_size, cb_fn, cb_arg);
 	if (req == NULL) {
+		SPDK_ERRLOG("nvme_allocate_request failed, no free nvme_request\n");
 		return NULL;
 	}
 
@@ -542,8 +543,10 @@ spdk_nvme_ns_cmd_read(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair, vo
 			ns->sectors_per_max_io,
 			ns->sectors_per_stripe,
 			qpair->ctrlr->opts.io_queue_requests)) {
+		SPDK_ERRLOG("Invalid paramters\n");
 		return -EINVAL;
 	} else {
+		SPDK_ERRLOG("Out of mem, no available nvme_request\n");
 		return -ENOMEM;
 	}
 }
@@ -655,8 +658,10 @@ spdk_nvme_ns_cmd_write(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 			ns->sectors_per_max_io,
 			ns->sectors_per_stripe,
 			qpair->ctrlr->opts.io_queue_requests)) {
+		SPDK_ERRLOG("Invalid paramters\n");
 		return -EINVAL;
 	} else {
+		SPDK_ERRLOG("Out of mem, no available nvme_request\n");
 		return -ENOMEM;
 	}
 }
