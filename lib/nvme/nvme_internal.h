@@ -350,6 +350,7 @@ struct spdk_nvme_qpair {
 	enum spdk_nvme_transport_type	trtype;
 
 	STAILQ_HEAD(, nvme_request)	free_req;
+	uint32_t free_req_num;
 	STAILQ_HEAD(, nvme_request)	queued_req;
 
 	/** Commands opcode in this list will return error */
@@ -868,6 +869,7 @@ nvme_allocate_request(struct spdk_nvme_qpair *qpair,
 	}
 
 	STAILQ_REMOVE_HEAD(&qpair->free_req, stailq);
+	qpair->free_req_num--;
 
 	/*
 	 * Only memset/zero fields that need it.  All other fields
@@ -958,6 +960,7 @@ nvme_free_request(struct nvme_request *req)
 	assert(req->qpair != NULL);
 
 	STAILQ_INSERT_HEAD(&req->qpair->free_req, req, stailq);
+	req->qpair->free_req_num++;
 }
 
 static inline void
@@ -967,6 +970,7 @@ nvme_qpair_free_request(struct spdk_nvme_qpair *qpair, struct nvme_request *req)
 	assert(req->num_children == 0);
 
 	STAILQ_INSERT_HEAD(&qpair->free_req, req, stailq);
+	qpair->free_req_num++;
 }
 
 static inline void

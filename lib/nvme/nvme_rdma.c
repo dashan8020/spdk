@@ -1744,8 +1744,25 @@ nvme_rdma_qpair_process_completions(struct spdk_nvme_qpair *qpair,
 
 		for (i = 0; i < rc; i++) {
 			if (wc[i].status) {
-				SPDK_ERRLOG("CQ error on Queue Pair %p, Opcode %u, Response Index %lu (%d): %s\n",
-					    qpair, wc[i].opcode, wc[i].wr_id, wc[i].status, ibv_wc_status_str(wc[i].status));
+				SPDK_ERRLOG("RDMA CQ error on Queue Pair %p, qp_num: %u, Vendor_err: %u, wr_id: 0x%lx, Status:(%d): %s\n",
+					    qpair, wc[i].qp_num, wc[i].vendor_err, wc[i].wr_id, wc[i].status, ibv_wc_status_str(wc[i].status));
+				if (wc[i].wr_id > rqpair->num_entries) {
+					/* The wq is SEND, need to free rdma_req */
+					rdma_req = (struct spdk_nvme_rdma_req *)wc[i].wr_id;
+					/* 1) call cb to free resource from user */
+					if (rdma_req->req->cb_fn) {
+						struct spdk_nvme_cpl cpl;
+						cpl.status.sc = cpl.status.sct = NVME_RDMA_CQ_ERROR_IDENTIFY_CODE;
+						rdma_req->req->cb_fn(rdma_req->req->cb_arg, &cpl);
+					}
+					/* 2) free req */
+					nvme_free_request(rdma_req->req);
+					/* 3) put rdma_req */
+					nvme_rdma_req_put(rqpair, rdma_req);
+				} else {
+					/* abort outstanding reqs */
+					nvme_rdma_qpair_abort_reqs(qpair, 1);
+				}
 				return NVME_RDMA_CQ_ERROR_IDENTIFY_CODE;
 			}
 
