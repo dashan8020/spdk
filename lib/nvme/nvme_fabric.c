@@ -260,7 +260,9 @@ nvme_fabric_ctrlr_discover(struct spdk_nvme_ctrlr *ctrlr,
 		}
 
 		for (i = 0; i < numrec; i++) {
-			nvme_fabric_discover_probe(log_page_entry++, probe_ctx);
+			if (probe_ctx->probe_cb && probe_ctx->attach_cb) {
+				nvme_fabric_discover_probe(log_page_entry++, probe_ctx);
+			}
 		}
 		remaining_num_rec -= numrec;
 		log_page_offset += numrec * sizeof(struct spdk_nvmf_discovery_log_page_entry);

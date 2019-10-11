@@ -2411,7 +2411,7 @@ nvme_ctrlr_keep_alive(struct spdk_nvme_ctrlr *ctrlr)
 
 	rc = nvme_ctrlr_submit_admin_request(ctrlr, req);
 	if (rc != 0) {
-		SPDK_ERRLOG("Submitting Keep Alive failed\n");
+		SPDK_ERRLOG("Submitting Keep Alive failed, rc=%d\n", rc);
 	}
 
 	ctrlr->next_keep_alive_tick = now + ctrlr->keep_alive_interval_ticks;

@@ -2416,6 +2416,8 @@ struct spdk_nvme_rdma_hooks {
  */
 void spdk_nvme_rdma_init_hooks(struct spdk_nvme_rdma_hooks *hooks);
 
+int spdk_nvme_discover(struct spdk_nvme_transport_id *trid);
+
 #ifdef __cplusplus
 }
 #endif

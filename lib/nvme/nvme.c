@@ -1147,4 +1147,48 @@ spdk_nvme_connect_async(const struct spdk_nvme_transport_id *trid,
 	return probe_ctx;
 }
 
+int spdk_nvme_discover(struct spdk_nvme_transport_id *trid)
+{
+	int rc;
+	struct spdk_nvme_probe_ctx *probe_ctx;
+
+	rc = nvme_driver_init();
+	if (rc != 0) {
+		SPDK_ERRLOG("nvme_driver_init failed\n");
+		return -1;
+	}
+
+	probe_ctx = calloc(1, sizeof(*probe_ctx));
+	if (!probe_ctx) {
+		SPDK_ERRLOG("Out of memory for probe_ctx\n");
+		return -1;
+	}
+	memset(probe_ctx, 0, sizeof(*probe_ctx));
+	snprintf(trid->subnqn, sizeof(trid->subnqn), "%s", SPDK_NVMF_DISCOVERY_NQN);
+	TAILQ_INIT(&probe_ctx->init_ctrlrs);
+	probe_ctx->trid = *trid;
+
+	if (!spdk_nvme_transport_available(probe_ctx->trid.trtype)) {
+		SPDK_ERRLOG("NVMe trtype %u not available\n", probe_ctx->trid.trtype);
+		return -1;
+	}
+
+	if (strcmp(probe_ctx->trid.subnqn, SPDK_NVMF_DISCOVERY_NQN) != 0) {
+		SPDK_ERRLOG("NQN: %s, not for discover\n", probe_ctx->trid.subnqn);
+		return -1;
+	}
+
+	nvme_robust_mutex_lock(&g_spdk_nvme_driver->lock);
+
+	rc = nvme_transport_ctrlr_scan(probe_ctx, false);
+	if (rc != 0) {
+		SPDK_ERRLOG("NVMe ctrlr scan failed\n");
+		nvme_robust_mutex_unlock(&g_spdk_nvme_driver->lock);
+		return -1;
+	}
+	nvme_robust_mutex_unlock(&g_spdk_nvme_driver->lock);
+
+	return 0;
+}
+
 SPDK_LOG_REGISTER_COMPONENT("nvme", SPDK_LOG_NVME)

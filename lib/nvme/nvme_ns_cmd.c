@@ -395,7 +395,7 @@ _nvme_ns_cmd_rw(struct spdk_nvme_ns *ns, struct spdk_nvme_qpair *qpair,
 
 	req = nvme_allocate_request(qpair, payload, lba_count * sector_size, cb_fn, cb_arg);
 	if (req == NULL) {
-		SPDK_ERRLOG("nvme_allocate_request failed, no free nvme_request\n");
+		SPDK_ERRLOG("nvme_allocate_request failed, no free nvme_request, qpair=%p, qpair_>id = %d\n", qpair, qpair->id);
 		return NULL;
 	}
 
