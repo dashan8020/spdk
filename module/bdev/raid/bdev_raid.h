@@ -36,6 +36,11 @@
 
 #include "spdk/bdev_module.h"
 
+enum raid_level {
+	INVALID_RAID_LEVEL	= -1,
+	RAID0			= 0,
+};
+
 /*
  * Raid state describes the state of the raid. This raid bdev can be either in
  * configured list or configuring list
@@ -81,6 +86,24 @@ struct raid_base_bdev_info {
 };
 
 /*
+ * raid_bdev_io is the context part of bdev_io. It contains the information
+ * related to bdev_io for a raid bdev
+ */
+struct raid_bdev_io {
+	/* WaitQ entry, used only in waitq logic */
+	struct spdk_bdev_io_wait_entry	waitq_entry;
+
+	/* Original channel for this IO, used in queuing logic */
+	struct spdk_io_channel		*ch;
+
+	/* Used for tracking progress on io requests sent to member disks. */
+	uint8_t				base_bdev_io_submitted;
+	uint8_t				base_bdev_io_completed;
+	uint8_t				base_bdev_io_expected;
+	uint8_t				base_bdev_io_status;
+};
+
+/*
  * raid_bdev is the single entity structure which contains SPDK block device
  * and the information related to any raid bdev either configured or
  * in configuring list. io device is created on this.
@@ -123,31 +146,13 @@ struct raid_bdev {
 	uint8_t				num_base_bdevs_discovered;
 
 	/* Raid Level of this raid bdev */
-	uint8_t				raid_level;
+	enum raid_level			level;
 
 	/* Set to true if destruct is called for this raid bdev */
 	bool				destruct_called;
 
 	/* Set to true if destroy of this raid bdev is started. */
 	bool				destroy_started;
-};
-
-/*
- * raid_bdev_io is the context part of bdev_io. It contains the information
- * related to bdev_io for a raid bdev
- */
-struct raid_bdev_io {
-	/* WaitQ entry, used only in waitq logic */
-	struct spdk_bdev_io_wait_entry	waitq_entry;
-
-	/* Original channel for this IO, used in queuing logic */
-	struct spdk_io_channel		*ch;
-
-	/* Used for tracking progress on io requests sent to member disks. */
-	uint8_t				base_bdev_io_submitted;
-	uint8_t				base_bdev_io_completed;
-	uint8_t				base_bdev_io_expected;
-	uint8_t				base_bdev_io_status;
 };
 
 /*
@@ -165,23 +170,23 @@ struct raid_base_bdev_config {
  */
 struct raid_bdev_config {
 	/* base bdev config per underlying bdev */
-	struct raid_base_bdev_config  *base_bdev;
+	struct raid_base_bdev_config	*base_bdev;
 
 	/* Points to already created raid bdev  */
-	struct raid_bdev              *raid_bdev;
+	struct raid_bdev		*raid_bdev;
 
-	char                          *name;
+	char				*name;
 
 	/* strip size of this raid bdev  in kilo bytes */
-	uint32_t                      strip_size;
+	uint32_t			strip_size;
 
 	/* number of base bdevs */
-	uint8_t                       num_base_bdevs;
+	uint8_t				num_base_bdevs;
 
 	/* raid level */
-	uint8_t                       raid_level;
+	enum raid_level			level;
 
-	TAILQ_ENTRY(raid_bdev_config) link;
+	TAILQ_ENTRY(raid_bdev_config)	link;
 };
 
 /*
@@ -227,10 +232,22 @@ int raid_bdev_add_base_devices(struct raid_bdev_config *raid_cfg);
 void raid_bdev_remove_base_devices(struct raid_bdev_config *raid_cfg,
 				   raid_bdev_destruct_cb cb_fn, void *cb_ctx);
 int raid_bdev_config_add(const char *raid_name, uint32_t strip_size, uint8_t num_base_bdevs,
-			 uint8_t raid_level, struct raid_bdev_config **_raid_cfg);
+			 enum raid_level level, struct raid_bdev_config **_raid_cfg);
 int raid_bdev_config_add_base_bdev(struct raid_bdev_config *raid_cfg,
 				   const char *base_bdev_name, uint8_t slot);
 void raid_bdev_config_cleanup(struct raid_bdev_config *raid_cfg);
 struct raid_bdev_config *raid_bdev_config_find_by_name(const char *raid_name);
+enum raid_level raid_bdev_parse_raid_level(const char *str);
+const char *raid_bdev_level_to_str(enum raid_level level);
+
+void
+raid0_start_rw_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io);
+void
+raid0_submit_null_payload_request(void *_bdev_io);
+void
+raid_bdev_base_io_completion(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg);
+void
+raid_bdev_queue_io_wait(struct spdk_bdev_io *raid_bdev_io, uint8_t pd_idx,
+			spdk_bdev_io_wait_cb cb_fn, int ret);
 
 #endif /* SPDK_BDEV_RAID_INTERNAL_H */

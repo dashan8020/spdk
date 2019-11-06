@@ -43,6 +43,7 @@
 #include "spdk/stdinc.h"
 
 #include "spdk/bdev.h"
+#include "spdk/bdev_zone.h"
 #include "spdk/queue.h"
 #include "spdk/scsi_spec.h"
 #include "spdk/thread.h"
@@ -265,6 +266,9 @@ struct spdk_bdev {
 	/** Number of blocks */
 	uint64_t blockcnt;
 
+	/** Number of blocks required for write */
+	uint32_t write_unit_size;
+
 	/**
 	 * Specifies an alignment requirement for data buffers associated with an spdk_bdev_io.
 	 * 0 = no alignment requirement
@@ -330,6 +334,26 @@ struct spdk_bdev {
 	 * Specify whether each DIF check type is enabled.
 	 */
 	uint32_t dif_check_flags;
+
+	/**
+	 * Specify whether bdev is zoned device.
+	 */
+	bool zoned;
+
+	/**
+	 * Default size of each zone (in blocks).
+	 */
+	uint64_t zone_size;
+
+	/**
+	 * Maximum number of open zones.
+	 */
+	uint32_t max_open_zones;
+
+	/**
+	 * Optimal number of open zones.
+	 */
+	uint32_t optimal_open_zones;
 
 	/**
 	 * Pointer to the bdev module that registered this bdev.
@@ -489,6 +513,19 @@ struct spdk_bdev_io {
 			/* meta data buffer size to transfer */
 			size_t md_len;
 		} nvme_passthru;
+		struct {
+			/* First logical block of a zone */
+			uint64_t zone_id;
+
+			/* Number of zones */
+			uint32_t num_zones;
+
+			/* Used to change zoned device zone state */
+			enum spdk_bdev_zone_action zone_action;
+
+			/* The data buffer */
+			void *buf;
+		} zone_mgmt;
 	} u;
 
 	/** It may be used by modules to put the bdev_io into its own list. */
@@ -519,8 +556,9 @@ struct spdk_bdev_io {
 
 		/** Error information from a device */
 		union {
-			/** Only valid when status is SPDK_BDEV_IO_STATUS_NVME_ERROR */
 			struct {
+				/** NVMe completion queue entry DW0 */
+				uint32_t cdw0;
 				/** NVMe status code type */
 				uint8_t sct;
 				/** NVMe status code */
@@ -780,13 +818,15 @@ void spdk_bdev_io_complete(struct spdk_bdev_io *bdev_io,
 			   enum spdk_bdev_io_status status);
 
 /**
- * Complete a bdev_io with an NVMe status code.
+ * Complete a bdev_io with an NVMe status code and DW0 completion queue entry
  *
  * \param bdev_io I/O to complete.
+ * \param cdw0 NVMe Completion Queue DW0 value (set to 0 if not applicable)
  * \param sct NVMe Status Code Type.
  * \param sc NVMe Status Code.
  */
-void spdk_bdev_io_complete_nvme_status(struct spdk_bdev_io *bdev_io, int sct, int sc);
+void spdk_bdev_io_complete_nvme_status(struct spdk_bdev_io *bdev_io, uint32_t cdw0, int sct,
+				       int sc);
 
 /**
  * Complete a bdev_io with a SCSI status code.
@@ -875,6 +915,15 @@ struct spdk_bdev_part_base;
  * \return A pointer to the base's spdk_bdev struct.
  */
 struct spdk_bdev *spdk_bdev_part_base_get_bdev(struct spdk_bdev_part_base *part_base);
+
+/**
+ * Returns a spdk_bdev name of the corresponding spdk_bdev_part_base
+ *
+ * \param part_base A pointer to an spdk_bdev_part_base object.
+ *
+ * \return A text string representing the name of the base bdev.
+ */
+const char *spdk_bdev_part_base_get_bdev_name(struct spdk_bdev_part_base *part_base);
 
 /**
  * Returns a pointer to the spdk_bdev_descriptor associated with an spdk_bdev_part_base

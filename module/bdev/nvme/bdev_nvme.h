@@ -40,6 +40,8 @@
 #include "spdk/nvme.h"
 #include "spdk/bdev_module.h"
 
+#include "common.h"
+
 enum spdk_bdev_timeout_action {
 	SPDK_BDEV_NVME_TIMEOUT_ACTION_NONE = 0,
 	SPDK_BDEV_NVME_TIMEOUT_ACTION_RESET,
@@ -50,12 +52,15 @@ struct spdk_bdev_nvme_opts {
 	enum spdk_bdev_timeout_action action_on_timeout;
 	uint64_t timeout_us;
 	uint32_t retry_count;
+	uint32_t arbitration_burst;
+	uint32_t low_priority_weight;
+	uint32_t medium_priority_weight;
+	uint32_t high_priority_weight;
 	uint64_t nvme_adminq_poll_period_us;
 	uint64_t nvme_ioq_poll_period_us;
 	uint32_t io_queue_requests;
 };
 
-typedef void (*spdk_bdev_create_nvme_fn)(void *ctx, int rc);
 struct spdk_nvme_qpair *spdk_bdev_nvme_get_io_qpair(struct spdk_io_channel *ctrlr_io_ch);
 void spdk_bdev_nvme_get_opts(struct spdk_bdev_nvme_opts *opts);
 int spdk_bdev_nvme_set_opts(const struct spdk_bdev_nvme_opts *opts);
@@ -64,7 +69,8 @@ int spdk_bdev_nvme_set_hotplug(bool enabled, uint64_t period_us, spdk_msg_fn cb,
 int spdk_bdev_nvme_create(struct spdk_nvme_transport_id *trid,
 			  struct spdk_nvme_host_id *hostid,
 			  const char *base_name,
-			  const char **names, size_t *count,
+			  const char **names,
+			  uint32_t count,
 			  const char *hostnqn,
 			  uint32_t prchk_flags,
 			  spdk_bdev_create_nvme_fn cb_fn,

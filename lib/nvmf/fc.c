@@ -241,16 +241,16 @@ struct spdk_nvmf_fc_transport {
 	pthread_mutex_t lock;
 };
 
-static struct spdk_nvmf_fc_transport *g_nvmf_fc_transport;
+static struct spdk_nvmf_fc_transport *g_nvmf_ftransport;
 
 static TAILQ_HEAD(, spdk_nvmf_fc_port) g_spdk_nvmf_fc_port_list =
 	TAILQ_HEAD_INITIALIZER(g_spdk_nvmf_fc_port_list);
 
 static struct spdk_thread *g_nvmf_fc_master_thread = NULL;
 
-static uint32_t g_nvmf_fc_poll_group_count = 0;
-static TAILQ_HEAD(, spdk_nvmf_fc_poll_group) g_nvmf_fc_poll_groups =
-	TAILQ_HEAD_INITIALIZER(g_nvmf_fc_poll_groups);
+static uint32_t g_nvmf_fgroup_count = 0;
+static TAILQ_HEAD(, spdk_nvmf_fc_poll_group) g_nvmf_fgroups =
+	TAILQ_HEAD_INITIALIZER(g_nvmf_fgroups);
 
 struct spdk_thread *
 spdk_nvmf_fc_get_master_thread(void)
@@ -415,29 +415,6 @@ nvmf_fc_req_in_get_buff(struct spdk_nvmf_fc_request *fc_req)
 	}
 }
 
-static void
-nvmf_fc_request_free_buffers(struct spdk_nvmf_fc_request *fc_req,
-			     struct spdk_nvmf_transport_poll_group *group,
-			     struct spdk_nvmf_transport *transport,
-			     uint32_t num_buffers)
-{
-	uint32_t i;
-
-	for (i = 0; i < num_buffers; i++) {
-		if (group->buf_cache_count < group->buf_cache_size) {
-			STAILQ_INSERT_HEAD(&group->buf_cache,
-					   (struct spdk_nvmf_transport_pg_cache_buf *)fc_req->buffers[i],
-					   link);
-			group->buf_cache_count++;
-		} else {
-			spdk_mempool_put(transport->data_buf_pool, fc_req->buffers[i]);
-		}
-		fc_req->req.iov[i].iov_base = NULL;
-		fc_req->buffers[i] = NULL;
-	}
-	fc_req->data_from_pool = false;
-}
-
 void
 spdk_nvmf_fc_init_poller_queues(struct spdk_nvmf_fc_hwqp *hwqp)
 {
@@ -503,24 +480,24 @@ static struct spdk_nvmf_fc_poll_group *
 nvmf_fc_get_idlest_poll_group(void)
 {
 	uint32_t max_count = UINT32_MAX;
-	struct spdk_nvmf_fc_poll_group *fc_poll_group;
-	struct spdk_nvmf_fc_poll_group *ret_fc_poll_group = NULL;
+	struct spdk_nvmf_fc_poll_group *fgroup;
+	struct spdk_nvmf_fc_poll_group *ret_fgroup = NULL;
 
 	/* find poll group with least number of hwqp's assigned to it */
-	TAILQ_FOREACH(fc_poll_group, &g_nvmf_fc_poll_groups, link) {
-		if (fc_poll_group->hwqp_count < max_count) {
-			ret_fc_poll_group = fc_poll_group;
-			max_count = fc_poll_group->hwqp_count;
+	TAILQ_FOREACH(fgroup, &g_nvmf_fgroups, link) {
+		if (fgroup->hwqp_count < max_count) {
+			ret_fgroup = fgroup;
+			max_count = fgroup->hwqp_count;
 		}
 	}
 
-	return ret_fc_poll_group;
+	return ret_fgroup;
 }
 
 void
 spdk_nvmf_fc_poll_group_add_hwqp(struct spdk_nvmf_fc_hwqp *hwqp)
 {
-	struct spdk_nvmf_fc_poll_group *fc_poll_group = NULL;
+	struct spdk_nvmf_fc_poll_group *fgroup = NULL;
 
 	assert(hwqp);
 	if (hwqp == NULL) {
@@ -528,17 +505,17 @@ spdk_nvmf_fc_poll_group_add_hwqp(struct spdk_nvmf_fc_hwqp *hwqp)
 		return;
 	}
 
-	assert(g_nvmf_fc_poll_group_count);
+	assert(g_nvmf_fgroup_count);
 
-	fc_poll_group = nvmf_fc_get_idlest_poll_group();
-	if (!fc_poll_group) {
+	fgroup = nvmf_fc_get_idlest_poll_group();
+	if (!fgroup) {
 		SPDK_ERRLOG("Could not assign poll group for hwqp (%d)\n", hwqp->hwqp_id);
 		return;
 	}
 
-	hwqp->thread = fc_poll_group->poll_group->thread;
-	hwqp->fc_poll_group = fc_poll_group;
-	fc_poll_group->hwqp_count++;
+	hwqp->thread = fgroup->group.group->thread;
+	hwqp->fgroup = fgroup;
+	fgroup->hwqp_count++;
 	spdk_nvmf_fc_poller_api_func(hwqp, SPDK_NVMF_FC_POLLER_API_ADD_HWQP, NULL);
 }
 
@@ -551,10 +528,10 @@ spdk_nvmf_fc_poll_group_remove_hwqp(struct spdk_nvmf_fc_hwqp *hwqp)
 		      "Remove hwqp from poller: for port: %d, hwqp: %d\n",
 		      hwqp->fc_port->port_hdl, hwqp->hwqp_id);
 
-	if (!hwqp->fc_poll_group) {
+	if (!hwqp->fgroup) {
 		SPDK_ERRLOG("HWQP (%d) not assigned to poll group\n", hwqp->hwqp_id);
 	} else {
-		hwqp->fc_poll_group->hwqp_count--;
+		hwqp->fgroup->hwqp_count--;
 		spdk_nvmf_fc_poller_api_func(hwqp, SPDK_NVMF_FC_POLLER_API_REMOVE_HWQP, NULL);
 	}
 }
@@ -1158,10 +1135,10 @@ nvmf_fc_req_in_bdev(struct spdk_nvmf_fc_request *fc_req)
 static inline bool
 nvmf_fc_req_in_pending(struct spdk_nvmf_fc_request *fc_req)
 {
-	struct spdk_nvmf_fc_request *tmp = NULL;
+	struct spdk_nvmf_request *tmp = NULL;
 
-	TAILQ_FOREACH(tmp, &fc_req->fc_conn->pending_queue, pending_link) {
-		if (tmp == fc_req) {
+	STAILQ_FOREACH(tmp, &fc_req->hwqp->fgroup->group.pending_buf_queue, buf_link) {
+		if (tmp == &fc_req->req) {
 			return true;
 		}
 	}
@@ -1231,7 +1208,7 @@ spdk_nvmf_fc_request_abort(struct spdk_nvmf_fc_request *fc_req, bool send_abts,
 	if (cb) {
 		ctx = calloc(1, sizeof(struct spdk_nvmf_fc_caller_ctx));
 		if (!ctx) {
-			SPDK_ERRLOG("%s: ctx alloc failed.\n", __func__);
+			SPDK_ERRLOG("ctx alloc failed.\n");
 			return;
 		}
 		ctx->cb = cb;
@@ -1281,11 +1258,12 @@ spdk_nvmf_fc_request_abort(struct spdk_nvmf_fc_request *fc_req, bool send_abts,
 		SPDK_DEBUGLOG(SPDK_LOG_NVMF_FC, "Abort req when getting buffers.\n");
 	} else if (nvmf_fc_req_in_pending(fc_req)) {
 		/* Remove from pending */
-		TAILQ_REMOVE(&fc_req->fc_conn->pending_queue, fc_req, pending_link);
+		STAILQ_REMOVE(&fc_req->hwqp->fgroup->group.pending_buf_queue, &fc_req->req,
+			      spdk_nvmf_request, buf_link);
 		goto complete;
 	} else {
 		/* Should never happen */
-		SPDK_ERRLOG("%s: Request in invalid state\n", __func__);
+		SPDK_ERRLOG("Request in invalid state\n");
 		goto complete;
 	}
 
@@ -1297,71 +1275,16 @@ complete:
 }
 
 static int
-nvmf_fc_request_get_buffers(struct spdk_nvmf_fc_request *fc_req,
-			    struct spdk_nvmf_transport_poll_group *group,
-			    struct spdk_nvmf_transport *transport,
-			    uint32_t num_buffers)
-{
-	uint32_t i = 0;
-
-	while (i < num_buffers) {
-		if (!(STAILQ_EMPTY(&group->buf_cache))) {
-			group->buf_cache_count--;
-			fc_req->buffers[i] = STAILQ_FIRST(&group->buf_cache);
-			STAILQ_REMOVE_HEAD(&group->buf_cache, link);
-			assert(fc_req->buffers[i] != NULL);
-			i++;
-		} else {
-			if (spdk_mempool_get_bulk(transport->data_buf_pool, &fc_req->buffers[i],
-						  num_buffers - i)) {
-				goto err_exit;
-			}
-			i += num_buffers - i;
-		}
-	}
-	return 0;
-
-err_exit:
-	nvmf_fc_request_free_buffers(fc_req, group, transport, i);
-	return -ENOMEM;
-}
-
-static void
-nvmf_fc_request_fill_buffers(struct spdk_nvmf_fc_request *fc_req,
-			     struct spdk_nvmf_transport *transport, uint32_t length)
-{
-	uint32_t i;
-
-	fc_req->req.iovcnt = 0;
-
-	while (length) {
-		i = fc_req->req.iovcnt;
-		fc_req->req.iov[i].iov_base = (void *)((uintptr_t)((char *)fc_req->buffers[i] +
-						       NVMF_DATA_BUFFER_MASK) &
-						       ~NVMF_DATA_BUFFER_MASK);
-		fc_req->req.iov[i].iov_len  = spdk_min(length, transport->opts.io_unit_size);
-		fc_req->req.iovcnt++;
-		length -= fc_req->req.iov[i].iov_len;
-	}
-	fc_req->data_from_pool = true;
-}
-
-static int
 nvmf_fc_request_alloc_buffers(struct spdk_nvmf_fc_request *fc_req)
 {
 	uint32_t length = fc_req->req.length;
-	uint32_t num_buffers;
-	struct spdk_nvmf_fc_poll_group *fc_poll_group = fc_req->hwqp->fc_poll_group;
-	struct spdk_nvmf_transport_poll_group *group = &fc_poll_group->tp_poll_group;
-	struct spdk_nvmf_transport *transport = &fc_poll_group->fc_transport->transport;
+	struct spdk_nvmf_fc_poll_group *fgroup = fc_req->hwqp->fgroup;
+	struct spdk_nvmf_transport_poll_group *group = &fgroup->group;
+	struct spdk_nvmf_transport *transport = group->transport;
 
-	num_buffers = SPDK_CEIL_DIV(length, transport->opts.io_unit_size);
-
-	if (nvmf_fc_request_get_buffers(fc_req, group, transport, num_buffers)) {
+	if (spdk_nvmf_request_get_buffers(&fc_req->req, group, transport, length)) {
 		return -ENOMEM;
 	}
-
-	nvmf_fc_request_fill_buffers(fc_req, transport, length);
 
 	return 0;
 }
@@ -1474,7 +1397,7 @@ nvmf_fc_hwqp_handle_request(struct spdk_nvmf_fc_hwqp *hwqp, struct spdk_nvmf_fc_
 
 	/* Make sure xfer len is according to mdts */
 	if (from_be32(&cmd_iu->data_len) >
-	    hwqp->fc_poll_group->fc_transport->transport.opts.max_io_size) {
+	    hwqp->fgroup->group.transport->opts.max_io_size) {
 		SPDK_ERRLOG("IO length requested is greater than MDTS\n");
 		return -EINVAL;
 	}
@@ -1506,7 +1429,7 @@ nvmf_fc_hwqp_handle_request(struct spdk_nvmf_fc_hwqp *hwqp, struct spdk_nvmf_fc_
 
 	nvmf_fc_record_req_trace_point(fc_req, SPDK_NVMF_FC_REQ_INIT);
 	if (nvmf_fc_request_execute(fc_req)) {
-		TAILQ_INSERT_TAIL(&fc_conn->pending_queue, fc_req, pending_link);
+		STAILQ_INSERT_TAIL(&hwqp->fgroup->group.pending_buf_queue, &fc_req->req, buf_link);
 	}
 
 	return 0;
@@ -1520,9 +1443,9 @@ void
 spdk_nvmf_fc_request_free(struct spdk_nvmf_fc_request *fc_req)
 {
 	struct spdk_nvmf_fc_hwqp *hwqp = fc_req->hwqp;
-	struct spdk_nvmf_fc_poll_group *fc_poll_group = hwqp->fc_poll_group;
-	struct spdk_nvmf_transport_poll_group *group = &fc_poll_group->tp_poll_group;
-	struct spdk_nvmf_transport *transport = &fc_poll_group->fc_transport->transport;
+	struct spdk_nvmf_fc_poll_group *fgroup = hwqp->fgroup;
+	struct spdk_nvmf_transport_poll_group *group = &fgroup->group;
+	struct spdk_nvmf_transport *transport = group->transport;
 
 	if (!fc_req) {
 		return;
@@ -1534,8 +1457,8 @@ spdk_nvmf_fc_request_free(struct spdk_nvmf_fc_request *fc_req)
 	}
 
 	/* Release IO buffers */
-	if (fc_req->data_from_pool) {
-		nvmf_fc_request_free_buffers(fc_req, group, transport, fc_req->req.iovcnt);
+	if (fc_req->req.data_from_pool) {
+		spdk_nvmf_request_free_buffers(&fc_req->req, group, transport);
 	}
 	fc_req->req.data = NULL;
 	fc_req->req.iovcnt  = 0;
@@ -1600,11 +1523,11 @@ spdk_nvmf_fc_hwqp_process_frame(struct spdk_nvmf_fc_hwqp *hwqp,
 	rc = nvmf_fc_hwqp_find_nport_and_rport(hwqp, d_id, &nport, s_id, &rport);
 	if (rc) {
 		if (nport == NULL) {
-			SPDK_ERRLOG("%s: Nport not found. Dropping\n", __func__);
+			SPDK_ERRLOG("Nport not found. Dropping\n");
 			/* increment invalid nport counter */
 			hwqp->counters.nport_invalid++;
 		} else if (rport == NULL) {
-			SPDK_ERRLOG("%s: Rport not found. Dropping\n", __func__);
+			SPDK_ERRLOG("Rport not found. Dropping\n");
 			/* increment invalid rport counter */
 			hwqp->counters.rport_invalid++;
 		}
@@ -1613,7 +1536,7 @@ spdk_nvmf_fc_hwqp_process_frame(struct spdk_nvmf_fc_hwqp *hwqp,
 
 	if (nport->nport_state != SPDK_NVMF_FC_OBJECT_CREATED ||
 	    rport->rport_state != SPDK_NVMF_FC_OBJECT_CREATED) {
-		SPDK_ERRLOG("%s: %s state not created. Dropping\n", __func__,
+		SPDK_ERRLOG("%s state not created. Dropping\n",
 			    nport->nport_state != SPDK_NVMF_FC_OBJECT_CREATED ?
 			    "Nport" : "Rport");
 		return -EACCES;
@@ -1649,7 +1572,7 @@ spdk_nvmf_fc_hwqp_process_frame(struct spdk_nvmf_fc_hwqp *hwqp,
 		ls_rqst->d_id = d_id;
 		ls_rqst->nport = nport;
 		ls_rqst->rport = rport;
-		ls_rqst->nvmf_tgt = g_nvmf_fc_transport->transport.tgt;
+		ls_rqst->nvmf_tgt = g_nvmf_ftransport->transport.tgt;
 
 		ls_rqst->xchg = nvmf_fc_get_xri(hwqp);
 		if (ls_rqst->xchg) {
@@ -1667,7 +1590,7 @@ spdk_nvmf_fc_hwqp_process_frame(struct spdk_nvmf_fc_hwqp *hwqp,
 		rc = nvmf_fc_hwqp_handle_request(hwqp, frame, buff_idx, buffer, plen);
 	} else {
 
-		SPDK_ERRLOG("%s Unknown frame received. Dropping\n", __func__);
+		SPDK_ERRLOG("Unknown frame received. Dropping\n");
 		hwqp->counters.unknown_frame++;
 		rc = -EINVAL;
 	}
@@ -1678,22 +1601,28 @@ spdk_nvmf_fc_hwqp_process_frame(struct spdk_nvmf_fc_hwqp *hwqp,
 void
 spdk_nvmf_fc_hwqp_process_pending_reqs(struct spdk_nvmf_fc_hwqp *hwqp)
 {
-	struct spdk_nvmf_fc_conn *fc_conn = NULL;
-	struct spdk_nvmf_fc_request *fc_req = NULL, *tmp;
+	struct spdk_nvmf_request *req = NULL, *tmp;
+	struct spdk_nvmf_fc_request *fc_req;
 	int budget = 64;
 
-	TAILQ_FOREACH(fc_conn, &hwqp->connection_list, link) {
-		TAILQ_FOREACH_SAFE(fc_req, &fc_conn->pending_queue, pending_link, tmp) {
-			if (!nvmf_fc_request_execute(fc_req)) {
-				/* Succesfuly posted, Delete from pending. */
-				TAILQ_REMOVE(&fc_conn->pending_queue, fc_req, pending_link);
-			}
+	if (!hwqp->fgroup) {
+		/* LS queue is tied to acceptor_poll group and LS pending requests
+		 * are stagged and processed using hwqp->ls_pending_queue.
+		 */
+		return;
+	}
 
-			if (budget) {
-				budget--;
-			} else {
-				return;
-			}
+	STAILQ_FOREACH_SAFE(req, &hwqp->fgroup->group.pending_buf_queue, buf_link, tmp) {
+		fc_req = SPDK_CONTAINEROF(req, struct spdk_nvmf_fc_request, req);
+		if (!nvmf_fc_request_execute(fc_req)) {
+			/* Succesfuly posted, Delete from pending. */
+			STAILQ_REMOVE_HEAD(&hwqp->fgroup->group.pending_buf_queue, buf_link);
+		}
+
+		if (budget) {
+			budget--;
+		} else {
+			return;
 		}
 	}
 }
@@ -1710,11 +1639,11 @@ spdk_nvmf_fc_hwqp_process_pending_ls_rqsts(struct spdk_nvmf_fc_hwqp *hwqp)
 		int rc = nvmf_fc_hwqp_find_nport_and_rport(hwqp, ls_rqst->d_id, &nport, ls_rqst->s_id, &rport);
 		if (rc) {
 			if (nport == NULL) {
-				SPDK_ERRLOG("%s: Nport not found. Dropping\n", __func__);
+				SPDK_ERRLOG("Nport not found. Dropping\n");
 				/* increment invalid nport counter */
 				hwqp->counters.nport_invalid++;
 			} else if (rport == NULL) {
-				SPDK_ERRLOG("%s: Rport not found. Dropping\n", __func__);
+				SPDK_ERRLOG("Rport not found. Dropping\n");
 				/* increment invalid rport counter */
 				hwqp->counters.rport_invalid++;
 			}
@@ -1725,7 +1654,7 @@ spdk_nvmf_fc_hwqp_process_pending_ls_rqsts(struct spdk_nvmf_fc_hwqp *hwqp)
 		}
 		if (nport->nport_state != SPDK_NVMF_FC_OBJECT_CREATED ||
 		    rport->rport_state != SPDK_NVMF_FC_OBJECT_CREATED) {
-			SPDK_ERRLOG("%s: %s state not created. Dropping\n", __func__,
+			SPDK_ERRLOG("%s state not created. Dropping\n",
 				    nport->nport_state != SPDK_NVMF_FC_OBJECT_CREATED ?
 				    "Nport" : "Rport");
 			TAILQ_REMOVE(&hwqp->ls_pending_queue, ls_rqst, ls_pending_link);
@@ -1880,8 +1809,8 @@ nvmf_fc_request_complete(struct spdk_nvmf_request *req)
 struct spdk_nvmf_tgt *
 spdk_nvmf_fc_get_tgt(void)
 {
-	if (g_nvmf_fc_transport) {
-		return g_nvmf_fc_transport->transport.tgt;
+	if (g_nvmf_ftransport) {
+		return g_nvmf_ftransport->transport.tgt;
 	}
 	return NULL;
 }
@@ -1927,7 +1856,7 @@ nvmf_fc_create(struct spdk_nvmf_transport_opts *opts)
 		     opts->io_unit_size,
 		     opts->max_aq_depth);
 
-	if (g_nvmf_fc_transport) {
+	if (g_nvmf_ftransport) {
 		SPDK_ERRLOG("Duplicate NVMF-FC transport create request!\n");
 		return NULL;
 	}
@@ -1945,44 +1874,44 @@ nvmf_fc_create(struct spdk_nvmf_transport_opts *opts)
 	}
 
 	g_nvmf_fc_master_thread = spdk_get_thread();
-	g_nvmf_fc_poll_group_count = 0;
-	g_nvmf_fc_transport = calloc(1, sizeof(*g_nvmf_fc_transport));
+	g_nvmf_fgroup_count = 0;
+	g_nvmf_ftransport = calloc(1, sizeof(*g_nvmf_ftransport));
 
-	if (!g_nvmf_fc_transport) {
+	if (!g_nvmf_ftransport) {
 		SPDK_ERRLOG("Failed to allocate NVMF-FC transport\n");
 		return NULL;
 	}
 
-	if (pthread_mutex_init(&g_nvmf_fc_transport->lock, NULL)) {
+	if (pthread_mutex_init(&g_nvmf_ftransport->lock, NULL)) {
 		SPDK_ERRLOG("pthread_mutex_init() failed\n");
-		free(g_nvmf_fc_transport);
-		g_nvmf_fc_transport = NULL;
+		free(g_nvmf_ftransport);
+		g_nvmf_ftransport = NULL;
 		return NULL;
 	}
 
 	/* initialize the low level FC driver */
 	nvmf_fc_lld_init();
 
-	return &g_nvmf_fc_transport->transport;
+	return &g_nvmf_ftransport->transport;
 }
 
 static int
 nvmf_fc_destroy(struct spdk_nvmf_transport *transport)
 {
 	if (transport) {
-		struct spdk_nvmf_fc_transport *fc_transport;
-		struct spdk_nvmf_fc_poll_group *fc_poll_group, *pg_tmp;
+		struct spdk_nvmf_fc_transport *ftransport;
+		struct spdk_nvmf_fc_poll_group *fgroup, *pg_tmp;
 
-		fc_transport = SPDK_CONTAINEROF(transport, struct spdk_nvmf_fc_transport, transport);
+		ftransport = SPDK_CONTAINEROF(transport, struct spdk_nvmf_fc_transport, transport);
 
-		free(fc_transport);
+		free(ftransport);
 
 		/* clean up any FC poll groups still around */
-		TAILQ_FOREACH_SAFE(fc_poll_group, &g_nvmf_fc_poll_groups, link, pg_tmp) {
-			TAILQ_REMOVE(&g_nvmf_fc_poll_groups, fc_poll_group, link);
-			free(fc_poll_group);
+		TAILQ_FOREACH_SAFE(fgroup, &g_nvmf_fgroups, link, pg_tmp) {
+			TAILQ_REMOVE(&g_nvmf_fgroups, fgroup, link);
+			free(fgroup);
 		}
-		g_nvmf_fc_poll_group_count = 0;
+		g_nvmf_fgroup_count = 0;
 
 		/* low level FC driver clean up */
 		nvmf_fc_lld_fini();
@@ -2008,7 +1937,7 @@ nvmf_fc_stop_listen(struct spdk_nvmf_transport *transport,
 }
 
 static void
-nvmf_fc_accept(struct spdk_nvmf_transport *transport, new_qpair_fn cb_fn)
+nvmf_fc_accept(struct spdk_nvmf_transport *transport, new_qpair_fn cb_fn, void *cb_arg)
 {
 	struct spdk_nvmf_fc_port *fc_port = NULL;
 	static bool start_lld = false;
@@ -2043,62 +1972,56 @@ nvmf_fc_discover(struct spdk_nvmf_transport *transport,
 static struct spdk_nvmf_transport_poll_group *
 nvmf_fc_poll_group_create(struct spdk_nvmf_transport *transport)
 {
-	struct spdk_nvmf_fc_poll_group *fc_poll_group;
-	struct spdk_io_channel *ch;
-	struct spdk_nvmf_fc_transport *fc_transport =
+	struct spdk_nvmf_fc_poll_group *fgroup;
+	struct spdk_nvmf_fc_transport *ftransport =
 		SPDK_CONTAINEROF(transport, struct spdk_nvmf_fc_transport, transport);
 
-	fc_poll_group = calloc(1, sizeof(struct spdk_nvmf_fc_poll_group));
-	if (!fc_poll_group) {
+	fgroup = calloc(1, sizeof(struct spdk_nvmf_fc_poll_group));
+	if (!fgroup) {
 		SPDK_ERRLOG("Unable to alloc FC poll group\n");
 		return NULL;
 	}
 
-	TAILQ_INIT(&fc_poll_group->hwqp_list);
-	fc_poll_group->fc_transport = fc_transport;
+	TAILQ_INIT(&fgroup->hwqp_list);
 
-	pthread_mutex_lock(&fc_transport->lock);
-	TAILQ_INSERT_TAIL(&g_nvmf_fc_poll_groups, fc_poll_group, link);
-	g_nvmf_fc_poll_group_count++;
-	pthread_mutex_unlock(&fc_transport->lock);
+	pthread_mutex_lock(&ftransport->lock);
+	TAILQ_INSERT_TAIL(&g_nvmf_fgroups, fgroup, link);
+	g_nvmf_fgroup_count++;
+	pthread_mutex_unlock(&ftransport->lock);
 
-	ch = spdk_get_io_channel(g_nvmf_fc_transport->transport.tgt);
-	if (ch) {
-		fc_poll_group->poll_group = spdk_io_channel_get_ctx(ch);
-		spdk_put_io_channel(ch);
-	}
-
-	return &fc_poll_group->tp_poll_group;
+	return &fgroup->group;
 }
 
 static void
 nvmf_fc_poll_group_destroy(struct spdk_nvmf_transport_poll_group *group)
 {
-	struct spdk_nvmf_fc_poll_group *fc_poll_group;
+	struct spdk_nvmf_fc_poll_group *fgroup;
+	struct spdk_nvmf_fc_transport *ftransport =
+		SPDK_CONTAINEROF(group->transport, struct spdk_nvmf_fc_transport, transport);
 
-	fc_poll_group = SPDK_CONTAINEROF(group, struct spdk_nvmf_fc_poll_group, tp_poll_group);
-	pthread_mutex_lock(&fc_poll_group->fc_transport->lock);
-	TAILQ_REMOVE(&g_nvmf_fc_poll_groups, fc_poll_group, link);
-	g_nvmf_fc_poll_group_count--;
-	pthread_mutex_unlock(&fc_poll_group->fc_transport->lock);
+	fgroup = SPDK_CONTAINEROF(group, struct spdk_nvmf_fc_poll_group, group);
+	pthread_mutex_lock(&ftransport->lock);
+	TAILQ_REMOVE(&g_nvmf_fgroups, fgroup, link);
+	g_nvmf_fgroup_count--;
+	pthread_mutex_unlock(&ftransport->lock);
 
-	free(fc_poll_group);
+	free(fgroup);
 }
 
 static int
 nvmf_fc_poll_group_add(struct spdk_nvmf_transport_poll_group *group,
 		       struct spdk_nvmf_qpair *qpair)
 {
-	struct spdk_nvmf_fc_poll_group *fc_poll_group;
+	struct spdk_nvmf_fc_poll_group *fgroup;
 	struct spdk_nvmf_fc_conn *fc_conn;
 	struct spdk_nvmf_fc_hwqp *hwqp = NULL;
 	struct spdk_nvmf_fc_ls_add_conn_api_data *api_data = NULL;
 	bool hwqp_found = false;
 
-	fc_poll_group   = SPDK_CONTAINEROF(group, struct spdk_nvmf_fc_poll_group, tp_poll_group);
-	fc_conn         = SPDK_CONTAINEROF(qpair, struct spdk_nvmf_fc_conn, qpair);
+	fgroup = SPDK_CONTAINEROF(group, struct spdk_nvmf_fc_poll_group, group);
+	fc_conn  = SPDK_CONTAINEROF(qpair, struct spdk_nvmf_fc_conn, qpair);
 
-	TAILQ_FOREACH(hwqp, &fc_poll_group->hwqp_list, link) {
+	TAILQ_FOREACH(hwqp, &fgroup->hwqp_list, link) {
 		if (fc_conn->fc_assoc->tgtport->fc_port == hwqp->fc_port) {
 			hwqp_found = true;
 			break;
@@ -2135,12 +2058,12 @@ static int
 nvmf_fc_poll_group_poll(struct spdk_nvmf_transport_poll_group *group)
 {
 	uint32_t count = 0;
-	struct spdk_nvmf_fc_poll_group *fc_poll_group;
+	struct spdk_nvmf_fc_poll_group *fgroup;
 	struct spdk_nvmf_fc_hwqp *hwqp;
 
-	fc_poll_group = SPDK_CONTAINEROF(group, struct spdk_nvmf_fc_poll_group, tp_poll_group);
+	fgroup = SPDK_CONTAINEROF(group, struct spdk_nvmf_fc_poll_group, group);
 
-	TAILQ_FOREACH(hwqp, &fc_poll_group->hwqp_list, link) {
+	TAILQ_FOREACH(hwqp, &fgroup->hwqp_list, link) {
 		if (hwqp->state == SPDK_FC_HWQP_ONLINE) {
 			count += nvmf_fc_process_queue(hwqp);
 		}
@@ -3080,16 +3003,23 @@ nvmf_fc_adm_add_rem_nport_listener(struct spdk_nvmf_fc_nport *nport, bool add)
 	while (subsystem) {
 		struct nvmf_fc_add_rem_listener_ctx *ctx;
 
-		ctx = calloc(1, sizeof(struct nvmf_fc_add_rem_listener_ctx));
-		if (ctx) {
-			ctx->add_listener = add;
-			spdk_nvmf_fc_create_trid(&ctx->trid, nport->fc_nodename.u.wwn,
-						 nport->fc_portname.u.wwn);
-			if (spdk_nvmf_subsystem_pause(subsystem, nvmf_fc_adm_subsystem_paused_cb, ctx)) {
-				SPDK_ERRLOG("Failed to pause subsystem: %s\n", subsystem->subnqn);
-				free(ctx);
+		if (spdk_nvmf_subsytem_any_listener_allowed(subsystem) == true) {
+			ctx = calloc(1, sizeof(struct nvmf_fc_add_rem_listener_ctx));
+			if (ctx) {
+				ctx->add_listener = add;
+				spdk_nvmf_fc_create_trid(&ctx->trid,
+							 nport->fc_nodename.u.wwn,
+							 nport->fc_portname.u.wwn);
+				if (spdk_nvmf_subsystem_pause(subsystem,
+							      nvmf_fc_adm_subsystem_paused_cb,
+							      ctx)) {
+					SPDK_ERRLOG("Failed to pause subsystem: %s\n",
+						    subsystem->subnqn);
+					free(ctx);
+				}
 			}
 		}
+
 		subsystem = spdk_nvmf_subsystem_get_next(subsystem);
 	}
 

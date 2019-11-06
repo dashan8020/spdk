@@ -27,7 +27,7 @@ class JSONRPCClient(object):
         ch.setLevel(logging.DEBUG)
         self._logger = logging.getLogger("JSONRPCClient(%s)" % addr)
         self._logger.addHandler(ch)
-        self.set_log_level(kwargs.get('log_level', logging.ERROR))
+        self.log_set_level(kwargs.get('log_level', logging.ERROR))
 
         self.timeout = timeout
         self._request_id = 0
@@ -69,7 +69,7 @@ class JSONRPCClient(object):
     Args:
         lvl: Log level to set as accepted by logger.setLevel
     """
-    def set_log_level(self, lvl):
+    def log_set_level(self, lvl):
         self._logger.info("Setting log level to %s", lvl)
         self._logger.setLevel(lvl)
         self._logger.info("Log level set to %s", lvl)
@@ -151,7 +151,7 @@ class JSONRPCClient(object):
             response = self.recv()
         except JSONRPCException as e:
             """ Don't expect response to kill """
-            if not self.sock and method == "kill_instance":
+            if not self.sock and method == "spdk_kill_instance":
                 self._logger.info("Connection terminated but ignoring since method is '%s'" % method)
                 return {}
             else:

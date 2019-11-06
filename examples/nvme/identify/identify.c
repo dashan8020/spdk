@@ -680,10 +680,8 @@ print_namespace(struct spdk_nvme_ns *ns)
 		printf("\n");
 	}
 
-	if (!spdk_nvme_ns_is_active(ns)) {
-		printf("Inactive namespace ID\n\n");
-		return;
-	}
+	/* This function is only called for active namespaces. */
+	assert(spdk_nvme_ns_is_active(ns));
 
 	printf("Deallocate:                            %s\n",
 	       (flags & SPDK_NVME_NS_DEALLOCATE_SUPPORTED) ? "Supported" : "Not Supported");
@@ -964,6 +962,7 @@ print_controller(struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_transport
 	} else {
 		printf("%" PRIu64 "\n", (uint64_t)1 << (12 + cap.bits.mpsmin + cdata->mdts));
 	}
+	printf("Max Number of Namespaces:              %d\n", cdata->nn);
 	if (features[SPDK_NVME_FEAT_ERROR_RECOVERY].valid) {
 		unsigned tler = features[SPDK_NVME_FEAT_ERROR_RECOVERY].result & 0xFFFF;
 		printf("Error Recovery Timeout:                ");
@@ -1248,7 +1247,7 @@ print_controller(struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_transport
 	}
 	printf("\n");
 
-	if (features[SPDK_NVME_FEAT_ARBITRATION].valid && (cap.bits.ams & SPDK_NVME_CAP_AMS_WRR)) {
+	if (features[SPDK_NVME_FEAT_ARBITRATION].valid) {
 		uint32_t arb = features[SPDK_NVME_FEAT_ARBITRATION].result;
 		unsigned ab, lpw, mpw, hpw;
 
@@ -1265,9 +1264,12 @@ print_controller(struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_transport
 		} else {
 			printf("%u\n", 1u << ab);
 		}
-		printf("Low Priority Weight:         %u\n", lpw);
-		printf("Medium Priority Weight:      %u\n", mpw);
-		printf("High Priority Weight:        %u\n", hpw);
+
+		if (cap.bits.ams & SPDK_NVME_CAP_AMS_WRR) {
+			printf("Low Priority Weight:         %u\n", lpw);
+			printf("Medium Priority Weight:      %u\n", mpw);
+			printf("High Priority Weight:        %u\n", hpw);
+		}
 		printf("\n");
 	}
 
@@ -1561,6 +1563,8 @@ print_controller(struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_transport
 		printf("\n");
 	}
 
+	printf("Active Namespaces\n");
+	printf("=================\n");
 	for (nsid = spdk_nvme_ctrlr_get_first_active_ns(ctrlr);
 	     nsid != 0; nsid = spdk_nvme_ctrlr_get_next_active_ns(ctrlr, nsid)) {
 		print_namespace(spdk_nvme_ctrlr_get_ns(ctrlr, nsid));

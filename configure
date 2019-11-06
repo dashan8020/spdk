@@ -4,6 +4,8 @@ set -e
 
 trap 'echo -e "\n\nConfiguration failed\n\n" >&2' ERR
 
+rootdir=$(readlink -f $(dirname $0))
+
 function usage()
 {
 	echo "'configure' configures SPDK to compile on supported platforms."
@@ -90,6 +92,10 @@ function usage()
 	echo "                           If an argument is provided, it is considered a directory containing"
 	echo "                           liburing.a and io_uring.h. Otherwise the regular system paths will"
 	echo "                           be searched."
+	echo " fuse                      Build FUSE components for mounting a blobfs filesystem."
+	echo "                           No path required."
+	echo " nvme-cuse                 Build NVMe driver with support for CUSE-based character devices."
+	echo "                           No path required."
 	echo ""
 	echo "Environment variables:"
 	echo ""
@@ -105,10 +111,10 @@ function usage()
 
 # Load default values
 # Convert config to sourcable configuration file
-sed -r 's/CONFIG_([[:alnum:]_]+)=(.*)/CONFIG[\1]=\2/g' CONFIG > CONFIG.sh
+sed -r 's/CONFIG_([[:alnum:]_]+)=(.*)/CONFIG[\1]=\2/g' $rootdir/CONFIG > $rootdir/CONFIG.sh
 declare -A CONFIG
-source CONFIG.sh
-rm CONFIG.sh
+source $rootdir/CONFIG.sh
+rm $rootdir/CONFIG.sh
 
 function check_dir() {
 	arg="$1"
@@ -353,6 +359,18 @@ for i in "$@"; do
 			CONFIG[URING]=n
 			CONFIG[URING_PATH]=
 			;;
+		--with-fuse)
+			CONFIG[FUSE]=y
+			;;
+		--without-fuse)
+			CONFIG[FUSE]=n
+			;;
+		--with-nvme-cuse)
+			CONFIG[NVME_CUSE]=y
+			;;
+		--without-nvme-cuse)
+			CONFIG[NVME_CUSE]=n
+			;;
 		--)
 			break
 			;;
@@ -364,16 +382,21 @@ for i in "$@"; do
 done
 
 # Detect the compiler toolchain
-scripts/detect_cc.sh --cc="$CC" --cxx="$CXX" --lto="${CONFIG[LTO]}" --ld="$LD" --cross-prefix="${CONFIG[CROSS_PREFIX]}"  > mk/cc.mk
+$rootdir/scripts/detect_cc.sh --cc="$CC" --cxx="$CXX" --lto="${CONFIG[LTO]}" --ld="$LD" --cross-prefix="${CONFIG[CROSS_PREFIX]}"  > $rootdir/mk/cc.mk
 
-CC=$(cat mk/cc.mk | grep "CC=" | cut -d "=" -f 2)
-CC_TYPE=$(cat mk/cc.mk | grep "CC_TYPE=" | cut -d "=" -f 2)
+CC=$(cat $rootdir/mk/cc.mk | grep "DEFAULT_CC=" | cut -d "=" -f 2)
+CC_TYPE=$(cat $rootdir/mk/cc.mk | grep "CC_TYPE=" | cut -d "=" -f 2)
 
-BUILD_CMD="$CC -o /dev/null -x c $CPPFLAGS $CFLAGS $LDFLAGS"
+arch=$($CC -dumpmachine)
+
+if [[ $arch == x86_64* ]]; then
+	BUILD_CMD=($CC -o /dev/null -x c $CPPFLAGS $CFLAGS $LDFLAGS -march=native)
+else
+	BUILD_CMD=($CC -o /dev/null -x c $CPPFLAGS $CFLAGS $LDFLAGS)
+fi
 
 # Detect architecture and force no ISA-L if non-x86 archtecture
 if [[ "${CONFIG[ISAL]}" = "y" ]]; then
-	arch=$($CC -dumpmachine)
 	if [[ $arch != x86_64* ]]; then
 		echo "Notice: ISA-L disabled due to CPU incompatiblity."
 		CONFIG[ISAL]=n
@@ -386,7 +409,6 @@ if [[ "${CONFIG[ISAL]}" = "n" ]] && [[ "${CONFIG[REDUCE]}" = "y" ]]; then
 fi
 
 if [ -z "${CONFIG[ENV]}" ]; then
-	rootdir=$(readlink -f $(dirname $0))
 	CONFIG[ENV]=$rootdir/lib/env_dpdk
 	echo "Using default SPDK env in ${CONFIG[ENV]}"
 	if [ -z "${CONFIG[DPDK_DIR]}" ]; then
@@ -417,7 +439,7 @@ if [ -z "${CONFIG[ENV]}" ]; then
 			# program, just compile it
 			if ! echo -e '#include <rte_vhost.h>\n' \
 				'int main(void) { return rte_vhost_extern_callback_register(0, NULL, NULL); }\n' \
-				| $BUILD_CMD -c -Wno-deprecated-declarations -Werror \
+				| ${BUILD_CMD[@]} -c -Wno-deprecated-declarations -Werror \
 				-I"${CONFIG[DPDK_DIR]}/include" - &>/dev/null; then
 				echo "Notice: DPDK's rte_vhost not found or version < 19.05, using internal," \
 				     "legacy rte_vhost library."
@@ -477,6 +499,10 @@ if [[ "$OSTYPE" == "freebsd"* ]]; then
 		echo "Vhost is only supported on Linux. Disabling it."
 		CONFIG[VHOST]="n"
 	fi
+	if [[ "${CONFIG[VHOST_INTERNAL_LIB]}" == "y" ]]; then
+		echo "Internal rte_vhost library is only supported on Linux. Disabling it."
+		CONFIG[VHOST_INTERNAL_LIB]="n"
+	fi
 	if [[ "${CONFIG[VIRTIO]}" == "y" ]]; then
 		echo "Virtio is only supported on Linux. Disabling it."
 		CONFIG[VIRTIO]="n"
@@ -486,7 +512,7 @@ fi
 if [ "${CONFIG[RDMA]}" = "y" ]; then
 	if ! echo -e '#include <infiniband/verbs.h>\n#include <rdma/rdma_verbs.h>\n' \
 		'int main(void) { return 0; }\n' \
-		| $BUILD_CMD -libverbs -lrdmacm - 2>/dev/null; then
+		| ${BUILD_CMD[@]} -libverbs -lrdmacm - 2>/dev/null; then
 		echo --with-rdma requires libverbs and librdmacm.
 		echo Please install then re-run this script.
 		exit 1
@@ -494,7 +520,7 @@ if [ "${CONFIG[RDMA]}" = "y" ]; then
 
 	if echo -e '#include <infiniband/verbs.h>\n' \
 		'int main(void) { return !!IBV_WR_SEND_WITH_INV; }\n' \
-		| $BUILD_CMD -c - 2>/dev/null; then
+		| ${BUILD_CMD[@]} -c - 2>/dev/null; then
 		CONFIG[RDMA_SEND_WITH_INVAL]="y"
 	else
 		CONFIG[RDMA_SEND_WITH_INVAL]="n"
@@ -565,7 +591,7 @@ fi
 
 if [[ "${CONFIG[PMDK]}" = "y" ]]; then
 	if ! echo -e '#include <libpmemblk.h>\nint main(void) { return 0; }\n' \
-		| $BUILD_CMD -lpmemblk - 2>/dev/null; then
+		| ${BUILD_CMD[@]} -lpmemblk - 2>/dev/null; then
 		echo --with-pmdk requires libpmemblk.
 		echo Please install then re-run this script.
 		exit 1
@@ -574,7 +600,7 @@ fi
 
 if [[ "${CONFIG[REDUCE]}" = "y" ]]; then
 	if ! echo -e '#include <libpmem.h>\nint main(void) { return 0; }\n' \
-		| $BUILD_CMD -lpmem - 2>/dev/null; then
+		| ${BUILD_CMD[@]} -lpmem - 2>/dev/null; then
 		echo --with-reduce requires libpmem.
 		echo Please install then re-run this script.
 		exit 1
@@ -586,8 +612,17 @@ if [[ "${CONFIG[VPP]}" = "y" ]]; then
 		VPP_CFLAGS="-L${CONFIG[VPP_DIR]}/lib -I${CONFIG[VPP_DIR]}/include"
 	fi
 	if ! echo -e '#include <vnet/session/application_interface.h>\nint main(void) { return 0; }\n' \
-		| $BUILD_CMD ${VPP_CFLAGS} -lvppinfra -lsvm -lvlibmemoryclient - 2>/dev/null; then
+		| ${BUILD_CMD[@]} ${VPP_CFLAGS} -lvppinfra -lsvm -lvlibmemoryclient - 2>/dev/null; then
 		echo --with-vpp requires installed vpp.
+		echo Please install then re-run this script.
+		exit 1
+	fi
+fi
+
+if [[ "${CONFIG[NVME_CUSE]}" = "y" ]]; then
+	if ! echo -e '#define FUSE_USE_VERSION 31\n#include <fuse3/cuse_lowlevel.h>\n#include <fuse3/fuse_lowlevel.h>\n#include <fuse3/fuse_opt.h>\nint main(void) { return 0; }\n' \
+		| ${BUILD_CMD[@]} -lfuse3 -D_FILE_OFFSET_BITS=64 - 2>/dev/null; then
+		echo --with-cuse requires libfuse3.
 		echo Please install then re-run this script.
 		exit 1
 	fi
@@ -596,7 +631,7 @@ fi
 if [[ "${CONFIG[RBD]}" = "y" ]]; then
 	if ! echo -e '#include <rbd/librbd.h>\n#include <rados/librados.h>\n' \
 		'int main(void) { return 0; }\n' \
-		| $BUILD_CMD -lrados -lrbd - 2>/dev/null; then
+		| ${BUILD_CMD[@]} -lrados -lrbd - 2>/dev/null; then
 		echo --with-rbd requires librados and librbd.
 		echo Please install then re-run this script.
 		exit 1
@@ -610,7 +645,7 @@ if [[ "${CONFIG[ISCSI_INITIATOR]}" = "y" ]]; then
 		'#error\n' \
 		'#endif\n' \
 		'int main(void) { return 0; }\n' \
-		| $BUILD_CMD -L/usr/lib64/iscsi -liscsi - 2>/dev/null; then
+		| ${BUILD_CMD[@]} -L/usr/lib64/iscsi -liscsi - 2>/dev/null; then
 		echo --with-iscsi-initiator requires libiscsi with
 		echo 'LIBISCSI_API_VERSION >= 20150621.'
 		echo Please install then re-run this script.
@@ -620,7 +655,7 @@ fi
 
 if [[ "${CONFIG[LOG_BACKTRACE]}" = "y" ]]; then
 	if ! echo -e '#include <libunwind.h>\nint main(void) { return 0; }\n' \
-		| $BUILD_CMD -lunwind - 2>/dev/null; then
+		| ${BUILD_CMD[@]} -lunwind - 2>/dev/null; then
 		echo --enable-log-bt requires libunwind.
 		echo Please install then re-run this script.
 		exit 1
@@ -629,7 +664,7 @@ fi
 
 if [[ "${CONFIG[ASAN]}" = "y" ]]; then
 	if ! echo -e 'int main(void) { return 0; }\n' \
-		| $BUILD_CMD -fsanitize=address - 2>/dev/null; then
+		| ${BUILD_CMD[@]} -fsanitize=address - 2>/dev/null; then
 		echo --enable-asan requires libasan.
 		echo Please install then re-run this script.
 		exit 1
@@ -638,7 +673,7 @@ fi
 
 if [[ "${CONFIG[UBSAN]}" = "y" ]]; then
 	if ! echo -e 'int main(void) { return 0; }\n' \
-		| $BUILD_CMD -fsanitize=undefined - 2>/dev/null; then
+		| ${BUILD_CMD[@]} -fsanitize=undefined - 2>/dev/null; then
 		echo --enable-ubsan requires libubsan.
 		echo Please install then re-run this script.
 		exit 1
@@ -647,7 +682,7 @@ fi
 
 if [[ "${CONFIG[TSAN]}" = "y" ]]; then
 	if ! echo -e 'int main(void) { return 0; }\n' \
-		| $BUILD_CMD -fsanitize=thread - 2>/dev/null; then
+		| ${BUILD_CMD[@]} -fsanitize=thread - 2>/dev/null; then
 		echo --enable-tsan requires libtsan.
 		echo Please install then re-run this script.
 		exit 1
@@ -683,9 +718,17 @@ if [[ "${CONFIG[URING]}" = "y" ]]; then
 	fi
 fi
 
+if [[ "${CONFIG[FUSE]}" = "y" ]]; then
+	if [[ ! -d /usr/include/fuse3 ]] && [[ ! -d /usr/local/include/fuse3 ]]; then
+		echo "--with-fuse requires libfuse3."
+		echo "Please install then re-run this script."
+		exit 1
+	fi
+fi
+
 # We are now ready to generate final configuration. But first do sanity
 # check to see if all keys in CONFIG array have its reflection in CONFIG file.
-if [ $(egrep -c "^\s*CONFIG_[[:alnum:]_]+=" CONFIG) -ne ${#CONFIG[@]} ]; then
+if [ $(egrep -c "^\s*CONFIG_[[:alnum:]_]+=" $rootdir/CONFIG) -ne ${#CONFIG[@]} ]; then
 	echo ""
 	echo "BUG: Some configuration options are not present in CONFIG file. Please update this file."
 	echo "Missing options in CONFIG (+) file and in current config (-): "
@@ -696,21 +739,21 @@ if [ $(egrep -c "^\s*CONFIG_[[:alnum:]_]+=" CONFIG) -ne ${#CONFIG[@]} ]; then
 fi
 
 echo -n "Creating mk/config.mk..."
-cp -f CONFIG mk/config.mk
+cp -f $rootdir/CONFIG $rootdir/mk/config.mk
 for key in ${!CONFIG[@]}; do
-	sed -i.bak -r "s#^\s*CONFIG_${key}=.*#CONFIG_${key}\?=${CONFIG[$key]}#g" mk/config.mk
+	sed -i.bak -r "s#^\s*CONFIG_${key}=.*#CONFIG_${key}\?=${CONFIG[$key]}#g" $rootdir/mk/config.mk
 done
 # On FreeBSD sed -i 'SUFFIX' - SUFFIX is mandatory. So no way but to delete the backed file.
-rm -f mk/config.mk.bak
+rm -f $rootdir/mk/config.mk.bak
 echo "done."
 
 # Environment variables
 echo -n "Creating mk/cc.flags.mk..."
-rm -f mk/cc.flags.mk
-[ -n "$CFLAGS" ] && echo "CFLAGS?=$CFLAGS" > mk/cc.flags.mk
-[ -n "$CXXFLAGS" ] && echo "CXXFLAGS?=$CXXFLAGS" >> mk/cc.flags.mk
-[ -n "$LDFLAGS" ] && echo "LDFLAGS?=$LDFLAGS" >> mk/cc.flags.mk
-[ -n "$DESTDIR" ] && echo "DESTDIR?=$DESTDIR" >> mk/cc.flags.mk
+rm -f $rootdir/mk/cc.flags.mk
+[ -n "$CFLAGS" ] && echo "CFLAGS?=$CFLAGS" > $rootdir/mk/cc.flags.mk
+[ -n "$CXXFLAGS" ] && echo "CXXFLAGS?=$CXXFLAGS" >> $rootdir/mk/cc.flags.mk
+[ -n "$LDFLAGS" ] && echo "LDFLAGS?=$LDFLAGS" >> $rootdir/mk/cc.flags.mk
+[ -n "$DESTDIR" ] && echo "DESTDIR?=$DESTDIR" >> $rootdir/mk/cc.flags.mk
 echo "done."
 
 if [[ "$OSTYPE" == "freebsd"* ]]; then

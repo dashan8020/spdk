@@ -137,6 +137,15 @@ void spdk_nvmf_tgt_destroy(struct spdk_nvmf_tgt *tgt,
 			   void *cb_arg);
 
 /**
+ * Get the name of an NVMe-oF target.
+ *
+ * \param tgt The target from which to get the name.
+ *
+ * \return The name of the target as a null terminated string.
+ */
+const char *spdk_nvmf_tgt_get_name(struct spdk_nvmf_tgt *tgt);
+
+/**
  * Get a pointer to an NVMe-oF target.
  *
  * In order to support some legacy applications and RPC methods that may rely on the
@@ -149,6 +158,26 @@ void spdk_nvmf_tgt_destroy(struct spdk_nvmf_tgt *tgt,
  * \return The target with the given name, or NULL if no match was found.
  */
 struct spdk_nvmf_tgt *spdk_nvmf_get_tgt(const char *name);
+
+/**
+ * Get the pointer to the first NVMe-oF target.
+ *
+ * Combined with spdk_nvmf_get_next_tgt to iterate over all available targets.
+ *
+ * \return The first NVMe-oF target.
+ */
+struct spdk_nvmf_tgt *spdk_nvmf_get_first_tgt(void);
+
+/**
+ * Get the pointer to the first NVMe-oF target.
+ *
+ * Combined with spdk_nvmf_get_first_tgt to iterate over all available targets.
+ *
+ * \param prev A pointer to the last NVMe-oF target.
+ *
+ * \return The first NVMe-oF target.
+ */
+struct spdk_nvmf_tgt *spdk_nvmf_get_next_tgt(struct spdk_nvmf_tgt *prev);
 
 /**
  * Write NVMe-oF target configuration into provided JSON context.
@@ -189,8 +218,9 @@ void spdk_nvmf_tgt_listen(struct spdk_nvmf_tgt *tgt,
  * Function to be called for each newly discovered qpair.
  *
  * \param qpair The newly discovered qpair.
+ * \param cb_arg A context argument passed to this function.
  */
-typedef void (*new_qpair_fn)(struct spdk_nvmf_qpair *qpair);
+typedef void (*new_qpair_fn)(struct spdk_nvmf_qpair *qpair, void *cb_arg);
 
 /**
  * Poll the target for incoming connections.
@@ -201,8 +231,9 @@ typedef void (*new_qpair_fn)(struct spdk_nvmf_qpair *qpair);
  *
  * \param tgt The target associated with the listen address.
  * \param cb_fn Called for each newly discovered qpair.
+ * \param cb_arg A context argument passed to cb_fn.
  */
-void spdk_nvmf_tgt_accept(struct spdk_nvmf_tgt *tgt, new_qpair_fn cb_fn);
+void spdk_nvmf_tgt_accept(struct spdk_nvmf_tgt *tgt, new_qpair_fn cb_fn, void *cb_arg);
 
 /**
  * Create a poll group.
@@ -470,7 +501,7 @@ int spdk_nvmf_subsystem_set_allow_any_host(struct spdk_nvmf_subsystem *subsystem
 /**
  * Check whether a subsystem should allow any host or only hosts in the allowed list.
  *
- * \param subsystem Subsystem to modify.
+ * \param subsystem Subsystem to query.
  *
  * \return true if any host is allowed to connect to this subsystem, or false if
  * connecting hosts must be in the whitelist configured with spdk_nvmf_subsystem_add_host().
@@ -586,6 +617,29 @@ struct spdk_nvmf_listener *spdk_nvmf_subsystem_get_next_listener(
  */
 const struct spdk_nvme_transport_id *spdk_nvmf_listener_get_trid(
 	struct spdk_nvmf_listener *listener);
+
+/**
+ * Set whether a subsystem should allow any listen address or only addresses in the allowed list.
+ *
+ * \param subsystem Subsystem to allow dynamic listener assignment.
+ * \param allow_any_listener true to allow dynamic listener assignment for
+ * this subsystem, or false to enforce the whitelist configured during
+ * subsystem setup.
+ */
+void spdk_nvmf_subsystem_allow_any_listener(
+	struct spdk_nvmf_subsystem *subsystem,
+	bool allow_any_listener);
+
+/**
+ * Check whether a subsystem allows any listen address or only addresses in the allowed list.
+ *
+ * \param subsystem Subsystem to query.
+ *
+ * \return true if this subsystem allows dynamic management of listen address list,
+ *  or false if only allows addresses in the whitelist configured during subsystem setup.
+ */
+bool spdk_nvmf_subsytem_any_listener_allowed(
+	struct spdk_nvmf_subsystem *subsystem);
 
 /** NVMe-oF target namespace creation options */
 struct spdk_nvmf_ns_opts {

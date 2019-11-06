@@ -299,7 +299,7 @@ dump_nvmf_subsystem(struct spdk_json_write_ctx *w, struct spdk_nvmf_subsystem *s
 }
 
 static void
-spdk_rpc_get_nvmf_subsystems(struct spdk_jsonrpc_request *request,
+spdk_rpc_nvmf_get_subsystems(struct spdk_jsonrpc_request *request,
 			     const struct spdk_json_val *params)
 {
 	struct rpc_get_subsystem req = { 0 };
@@ -336,7 +336,8 @@ spdk_rpc_get_nvmf_subsystems(struct spdk_jsonrpc_request *request,
 	spdk_jsonrpc_end_result(request, w);
 	free(req.tgt_name);
 }
-SPDK_RPC_REGISTER("get_nvmf_subsystems", spdk_rpc_get_nvmf_subsystems, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("nvmf_get_subsystems", spdk_rpc_nvmf_get_subsystems, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(nvmf_get_subsystems, get_nvmf_subsystems)
 
 struct rpc_subsystem_create {
 	char *nqn;
@@ -369,7 +370,7 @@ spdk_rpc_nvmf_subsystem_started(struct spdk_nvmf_subsystem *subsystem,
 }
 
 static void
-spdk_rpc_nvmf_subsystem_create(struct spdk_jsonrpc_request *request,
+spdk_rpc_nvmf_create_subsystem(struct spdk_jsonrpc_request *request,
 			       const struct spdk_json_val *params)
 {
 	struct rpc_subsystem_create *req;
@@ -440,7 +441,8 @@ invalid_custom_response:
 	}
 	free(req);
 }
-SPDK_RPC_REGISTER("nvmf_subsystem_create", spdk_rpc_nvmf_subsystem_create, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("nvmf_create_subsystem", spdk_rpc_nvmf_create_subsystem, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(nvmf_create_subsystem, nvmf_subsystem_create)
 
 struct rpc_delete_subsystem {
 	char *nqn;
@@ -474,7 +476,7 @@ static const struct spdk_json_object_decoder rpc_delete_subsystem_decoders[] = {
 };
 
 static void
-spdk_rpc_delete_nvmf_subsystem(struct spdk_jsonrpc_request *request,
+spdk_rpc_nvmf_delete_subsystem(struct spdk_jsonrpc_request *request,
 			       const struct spdk_json_val *params)
 {
 	struct rpc_delete_subsystem req = { 0 };
@@ -518,7 +520,8 @@ invalid:
 invalid_custom_response:
 	free_rpc_delete_subsystem(&req);
 }
-SPDK_RPC_REGISTER("delete_nvmf_subsystem", spdk_rpc_delete_nvmf_subsystem, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("nvmf_delete_subsystem", spdk_rpc_nvmf_delete_subsystem, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(nvmf_delete_subsystem, delete_nvmf_subsystem)
 
 struct rpc_listen_address {
 	char *transport;
@@ -1397,6 +1400,137 @@ spdk_rpc_nvmf_subsystem_allow_any_host(struct spdk_jsonrpc_request *request,
 SPDK_RPC_REGISTER("nvmf_subsystem_allow_any_host", spdk_rpc_nvmf_subsystem_allow_any_host,
 		  SPDK_RPC_RUNTIME)
 
+struct nvmf_rpc_target_ctx {
+	char *name;
+	uint32_t max_subsystems;
+};
+
+static const struct spdk_json_object_decoder nvmf_rpc_create_target_decoder[] = {
+	{"name", offsetof(struct nvmf_rpc_target_ctx, name), spdk_json_decode_string},
+	{"max_subsystems", offsetof(struct nvmf_rpc_target_ctx, max_subsystems), spdk_json_decode_uint32, true},
+};
+
+static void
+spdk_rpc_nvmf_create_target(struct spdk_jsonrpc_request *request,
+			    const struct spdk_json_val *params)
+{
+	struct spdk_nvmf_target_opts	opts;
+	struct nvmf_rpc_target_ctx	ctx = {0};
+	struct spdk_nvmf_tgt		*tgt;
+	struct spdk_json_write_ctx	*w;
+
+	/* Decode parameters the first time to get the transport type */
+	if (spdk_json_decode_object(params, nvmf_rpc_create_target_decoder,
+				    SPDK_COUNTOF(nvmf_rpc_create_target_decoder),
+				    &ctx)) {
+		SPDK_ERRLOG("spdk_json_decode_object failed\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
+		free(ctx.name);
+		return;
+	}
+
+	snprintf(opts.name, NVMF_TGT_NAME_MAX_LENGTH, "%s", ctx.name);
+	opts.max_subsystems = ctx.max_subsystems;
+
+	if (spdk_nvmf_get_tgt(opts.name) != NULL) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "Target already exists.");
+		free(ctx.name);
+		return;
+	}
+
+	tgt = spdk_nvmf_tgt_create(&opts);
+
+	if (tgt == NULL) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "Unable to create the requested target.");
+		free(ctx.name);
+		return;
+	}
+
+	w = spdk_jsonrpc_begin_result(request);
+	spdk_json_write_string(w, spdk_nvmf_tgt_get_name(tgt));
+	spdk_jsonrpc_end_result(request, w);
+	free(ctx.name);
+}
+SPDK_RPC_REGISTER("nvmf_create_target", spdk_rpc_nvmf_create_target, SPDK_RPC_RUNTIME);
+
+static const struct spdk_json_object_decoder nvmf_rpc_destroy_target_decoder[] = {
+	{"name", offsetof(struct nvmf_rpc_target_ctx, name), spdk_json_decode_string},
+};
+
+static void
+nvmf_rpc_destroy_target_done(void *ctx, int status)
+{
+	struct spdk_jsonrpc_request	*request = ctx;
+	struct spdk_json_write_ctx	*w;
+
+	w = spdk_jsonrpc_begin_result(request);
+	spdk_json_write_bool(w, true);
+	spdk_jsonrpc_end_result(request, w);
+}
+
+static void
+spdk_rpc_nvmf_delete_target(struct spdk_jsonrpc_request *request,
+			    const struct spdk_json_val *params)
+{
+	struct nvmf_rpc_target_ctx	ctx = {0};
+	struct spdk_nvmf_tgt		*tgt;
+
+	/* Decode parameters the first time to get the transport type */
+	if (spdk_json_decode_object(params, nvmf_rpc_destroy_target_decoder,
+				    SPDK_COUNTOF(nvmf_rpc_destroy_target_decoder),
+				    &ctx)) {
+		SPDK_ERRLOG("spdk_json_decode_object failed\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS, "Invalid parameters");
+		free(ctx.name);
+		return;
+	}
+
+	tgt = spdk_nvmf_get_tgt(ctx.name);
+
+	if (tgt == NULL) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "The specified target doesn't exist, cannot delete it.");
+		free(ctx.name);
+		return;
+	}
+
+	spdk_nvmf_tgt_destroy(tgt, nvmf_rpc_destroy_target_done, request);
+	free(ctx.name);
+}
+SPDK_RPC_REGISTER("nvmf_delete_target", spdk_rpc_nvmf_delete_target, SPDK_RPC_RUNTIME);
+
+static void
+spdk_rpc_nvmf_get_targets(struct spdk_jsonrpc_request *request,
+			  const struct spdk_json_val *params)
+{
+	struct spdk_json_write_ctx	*w;
+	struct spdk_nvmf_tgt		*tgt;
+	const char			*name;
+
+	if (params != NULL) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "nvmf_get_targets has no parameters.");
+		return;
+	}
+
+	w = spdk_jsonrpc_begin_result(request);
+	spdk_json_write_array_begin(w);
+
+	tgt = spdk_nvmf_get_first_tgt();
+
+	while (tgt != NULL) {
+		name = spdk_nvmf_tgt_get_name(tgt);
+		spdk_json_write_string(w, name);
+		tgt = spdk_nvmf_get_next_tgt(tgt);
+	}
+
+	spdk_json_write_array_end(w);
+	spdk_jsonrpc_end_result(request, w);
+}
+SPDK_RPC_REGISTER("nvmf_get_targets", spdk_rpc_nvmf_get_targets, SPDK_RPC_RUNTIME);
+
 struct nvmf_rpc_create_transport_ctx {
 	char				*trtype;
 	char				*tgt_name;
@@ -1582,7 +1716,6 @@ spdk_rpc_nvmf_create_transport(struct spdk_jsonrpc_request *request,
 	ctx->request = request;
 	spdk_nvmf_tgt_add_transport(tgt, transport, nvmf_rpc_tgt_add_transport_done, ctx);
 }
-
 SPDK_RPC_REGISTER("nvmf_create_transport", spdk_rpc_nvmf_create_transport, SPDK_RPC_RUNTIME)
 
 static void
@@ -1602,12 +1735,12 @@ dump_nvmf_transport(struct spdk_json_write_ctx *w, struct spdk_nvmf_transport *t
 	spdk_json_write_named_uint32(w, "max_aq_depth", opts->max_aq_depth);
 	spdk_json_write_named_uint32(w, "num_shared_buffers", opts->num_shared_buffers);
 	spdk_json_write_named_uint32(w, "buf_cache_size", opts->buf_cache_size);
+	spdk_json_write_named_bool(w, "dif_insert_or_strip", opts->dif_insert_or_strip);
 	if (type == SPDK_NVME_TRANSPORT_RDMA) {
 		spdk_json_write_named_uint32(w, "max_srq_depth", opts->max_srq_depth);
 		spdk_json_write_named_bool(w, "no_srq", opts->no_srq);
 	} else if (type == SPDK_NVME_TRANSPORT_TCP) {
 		spdk_json_write_named_bool(w, "c2h_success", opts->c2h_success);
-		spdk_json_write_named_bool(w, "dif_insert_or_strip", opts->dif_insert_or_strip);
 		spdk_json_write_named_uint32(w, "sock_priority", opts->sock_priority);
 	}
 
@@ -1623,7 +1756,7 @@ static const struct spdk_json_object_decoder rpc_get_transport_decoders[] = {
 };
 
 static void
-spdk_rpc_get_nvmf_transports(struct spdk_jsonrpc_request *request,
+spdk_rpc_nvmf_get_transports(struct spdk_jsonrpc_request *request,
 			     const struct spdk_json_val *params)
 {
 	struct rpc_get_transport req = { 0 };
@@ -1660,7 +1793,8 @@ spdk_rpc_get_nvmf_transports(struct spdk_jsonrpc_request *request,
 	spdk_jsonrpc_end_result(request, w);
 	free(req.tgt_name);
 }
-SPDK_RPC_REGISTER("get_nvmf_transports", spdk_rpc_get_nvmf_transports, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("nvmf_get_transports", spdk_rpc_nvmf_get_transports, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(nvmf_get_transports, get_nvmf_transports)
 
 struct rpc_nvmf_get_stats_ctx {
 	char *tgt_name;

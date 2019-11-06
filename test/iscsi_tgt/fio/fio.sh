@@ -78,18 +78,18 @@ echo "iscsi_tgt is listening. Running tests..."
 
 timing_exit start_iscsi_tgt
 
-$rpc_py add_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT
-$rpc_py add_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
+$rpc_py iscsi_create_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT
+$rpc_py iscsi_create_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
 # Create a RAID-0 bdev from two malloc bdevs
 malloc_bdevs="$($rpc_py bdev_malloc_create $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE) "
 malloc_bdevs+="$($rpc_py bdev_malloc_create $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE)"
-$rpc_py construct_raid_bdev -n raid0 -z 64 -r 0 -b "$malloc_bdevs"
+$rpc_py bdev_raid_create -n raid0 -z 64 -r 0 -b "$malloc_bdevs"
 bdev=$( $rpc_py bdev_malloc_create 1024 512 )
 # "raid0:0" ==> use raid0 blockdev for LUN0
 # "1:2" ==> map PortalGroup1 to InitiatorGroup2
 # "64" ==> iSCSI queue depth 64
 # "-d" ==> disable CHAP authentication
-$rpc_py construct_target_node Target3 Target3_alias "raid0:0 ${bdev}:1" $PORTAL_TAG:$INITIATOR_TAG 64 -d
+$rpc_py iscsi_create_target_node Target3 Target3_alias "raid0:0 ${bdev}:1" $PORTAL_TAG:$INITIATOR_TAG 64 -d
 sleep 1
 
 iscsiadm -m discovery -t sendtargets -p $TARGET_IP:$ISCSI_PORT
@@ -120,15 +120,15 @@ fio_pid=$!
 sleep 3
 
 # Delete raid0 blockdev
-$rpc_py destroy_raid_bdev 'raid0'
+$rpc_py bdev_raid_delete 'raid0'
 
 # Delete all allocated malloc blockdevs
 for malloc_bdev in $malloc_bdevs; do
-	$rpc_py delete_malloc_bdev $malloc_bdev
+	$rpc_py bdev_malloc_delete $malloc_bdev
 done
 
 # Delete malloc device
-$rpc_py delete_malloc_bdev ${bdev}
+$rpc_py bdev_malloc_delete ${bdev}
 
 fio_status=0
 wait $fio_pid || fio_status=$?
@@ -142,7 +142,7 @@ else
 fi
 
 iscsicleanup
-$rpc_py delete_target_node 'iqn.2016-06.io.spdk:Target3'
+$rpc_py iscsi_delete_target_node 'iqn.2016-06.io.spdk:Target3'
 
 delete_tmp_files
 

@@ -17,7 +17,7 @@ nvmfappstart "-m 0xF"
 
 $rootdir/scripts/gen_nvme.sh --json | $rpc_py load_subsystem_config
 
-local_nvme_trid="trtype:PCIe traddr:"$($rpc_py get_subsystem_config bdev | jq -r '.[].params | select(.name=="Nvme0").traddr')
+local_nvme_trid="trtype:PCIe traddr:"$($rpc_py framework_get_config bdev | jq -r '.[].params | select(.name=="Nvme0").traddr')
 bdevs="$bdevs $($rpc_py bdev_malloc_create $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE)"
 
 if [ -n "$local_nvme_trid" ]; then
@@ -25,7 +25,7 @@ if [ -n "$local_nvme_trid" ]; then
 fi
 
 $rpc_py nvmf_create_transport $NVMF_TRANSPORT_OPTS
-$rpc_py nvmf_subsystem_create nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
+$rpc_py nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
 for bdev in $bdevs; do
 	$rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 $bdev
 done
@@ -33,18 +33,23 @@ $rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t $TEST_TRANSPOR
 
 # Test multi-process access to local NVMe device
 if [ -n "$local_nvme_trid" ]; then
-	$rootdir/examples/nvme/perf/perf -i $NVMF_APP_SHM_ID -q 32 -o 4096 -w randrw -M 50 -t 1 -r "$local_nvme_trid"
+	if [ $SPDK_RUN_NON_ROOT -eq 1 ]; then
+		perf_app="sudo -u $(logname) $rootdir/examples/nvme/perf/perf"
+	else
+		perf_app="$rootdir/examples/nvme/perf/perf"
+	fi
+	$perf_app -i $NVMF_APP_SHM_ID -q 32 -o 4096 -w randrw -M 50 -t 1 -r "$local_nvme_trid"
 fi
 
 $rootdir/examples/nvme/perf/perf -q 32 -o 4096 -w randrw -M 50 -t 1 -r "trtype:$TEST_TRANSPORT adrfam:IPv4 traddr:$NVMF_FIRST_TARGET_IP trsvcid:$NVMF_PORT"
 $rootdir/examples/nvme/perf/perf -q 128 -o 262144 -w randrw -M 50 -t 2 -r "trtype:$TEST_TRANSPORT adrfam:IPv4 traddr:$NVMF_FIRST_TARGET_IP trsvcid:$NVMF_PORT"
 sync
-$rpc_py delete_nvmf_subsystem nqn.2016-06.io.spdk:cnode1
+$rpc_py nvmf_delete_subsystem nqn.2016-06.io.spdk:cnode1
 
 if [ $RUN_NIGHTLY -eq 1 ]; then
 	# Configure nvme devices with nvmf lvol_bdev backend
 	if [ -n "$local_nvme_trid" ]; then
-		ls_guid=$($rpc_py construct_lvol_store Nvme0n1 lvs_0)
+		ls_guid=$($rpc_py bdev_lvol_create_lvstore Nvme0n1 lvs_0)
 		get_lvs_free_mb $ls_guid
 		# We don't need to create an lvol larger than 20G for this test.
 		# decreasing the size of the nested lvol allows us to take less time setting up
@@ -52,16 +57,16 @@ if [ $RUN_NIGHTLY -eq 1 ]; then
 		if [ $free_mb -gt 20480 ]; then
 			free_mb=20480
 		fi
-		lb_guid=$($rpc_py construct_lvol_bdev -u $ls_guid lbd_0 $free_mb)
+		lb_guid=$($rpc_py bdev_lvol_create -u $ls_guid lbd_0 $free_mb)
 
 		# Create lvol bdev for nested lvol stores
-		ls_nested_guid=$($rpc_py construct_lvol_store $lb_guid lvs_n_0)
+		ls_nested_guid=$($rpc_py bdev_lvol_create_lvstore $lb_guid lvs_n_0)
 		get_lvs_free_mb $ls_nested_guid
 		if [ $free_mb -gt 20480 ]; then
 			free_mb=20480
 		fi
-		lb_nested_guid=$($rpc_py construct_lvol_bdev -u $ls_nested_guid lbd_nest_0 $free_mb)
-		$rpc_py nvmf_subsystem_create nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
+		lb_nested_guid=$($rpc_py bdev_lvol_create -u $ls_nested_guid lbd_nest_0 $free_mb)
+		$rpc_py nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
 		for bdev in $lb_nested_guid; do
 			$rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 $bdev
 		done
@@ -76,11 +81,11 @@ if [ $RUN_NIGHTLY -eq 1 ]; then
 		done
 
 		# Delete subsystems, lvol_bdev and destroy lvol_store.
-		$rpc_py delete_nvmf_subsystem nqn.2016-06.io.spdk:cnode1
-		$rpc_py destroy_lvol_bdev "$lb_nested_guid"
-		$rpc_py destroy_lvol_store -l lvs_n_0
-		$rpc_py destroy_lvol_bdev "$lb_guid"
-		$rpc_py destroy_lvol_store -l lvs_0
+		$rpc_py nvmf_delete_subsystem nqn.2016-06.io.spdk:cnode1
+		$rpc_py bdev_lvol_delete "$lb_nested_guid"
+		$rpc_py bdev_lvol_delete_lvstore -l lvs_n_0
+		$rpc_py bdev_lvol_delete "$lb_guid"
+		$rpc_py bdev_lvol_delete_lvstore -l lvs_0
 	fi
 fi
 

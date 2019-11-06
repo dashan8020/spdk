@@ -43,14 +43,14 @@ trap 'process_shm --id $NVMF_APP_SHM_ID; killprocess $vhostpid nvmftestfini; exi
 malloc_bdev="$($NVMF_RPC bdev_malloc_create $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE)"
 
 $NVMF_RPC nvmf_create_transport $NVMF_TRANSPORT_OPTS -u 8192 -p 4
-$NVMF_RPC nvmf_subsystem_create nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
+$NVMF_RPC nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
 $NVMF_RPC nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 "$malloc_bdev"
 $NVMF_RPC nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
 
 # Configure VHost on host machine
-$VHOST_RPC construct_nvme_bdev -b Nvme0 -t $TEST_TRANSPORT -f ipv4 -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT -n nqn.2016-06.io.spdk:cnode1
-$VHOST_RPC construct_vhost_scsi_controller naa.VhostScsi0.3
-$VHOST_RPC add_vhost_scsi_lun naa.VhostScsi0.3 0 "Nvme0n1"
+$VHOST_RPC bdev_nvme_attach_controller -b Nvme0 -t $TEST_TRANSPORT -f ipv4 -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT -n nqn.2016-06.io.spdk:cnode1
+$VHOST_RPC vhost_create_scsi_controller naa.VhostScsi0.3
+$VHOST_RPC vhost_scsi_controller_add_target naa.VhostScsi0.3 0 "Nvme0n1"
 
 # start qemu based VM.
 vm_setup --os="$VM_IMAGE" --disk-type=spdk_vhost_scsi --disks="VhostScsi0"  --force=3 --vhost-name=3

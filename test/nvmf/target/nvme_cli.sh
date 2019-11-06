@@ -26,7 +26,7 @@ $rpc_py nvmf_create_transport $NVMF_TRANSPORT_OPTS -u 8192
 $rpc_py bdev_malloc_create $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE -b Malloc0
 $rpc_py bdev_malloc_create $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE -b Malloc1
 
-$rpc_py nvmf_subsystem_create nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001 -d SPDK_Controller1
+$rpc_py nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001 -d SPDK_Controller1
 $rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 Malloc0
 $rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 Malloc1
 $rpc_py nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT
@@ -59,10 +59,10 @@ if [ -d  $spdk_nvme_cli ]; then
 	cd $spdk_nvme_cli
 	sed -i 's/shm_id=.*/shm_id=-1/g' spdk.conf
 	./nvme discover -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s "$NVMF_PORT"
-	nvme_num_before_connection=$(nvme list |grep "/dev/nvme*"|awk '{print $1}'|wc -l)
+	nvme_num_before_connection=$(nvme list |grep "/dev/nvme"|awk '{print $1}'|wc -l)
 	./nvme connect -t $TEST_TRANSPORT -n "nqn.2016-06.io.spdk:cnode1" -a "$NVMF_FIRST_TARGET_IP" -s "$NVMF_PORT"
 	sleep 1
-	nvme_num=$(nvme list |grep "/dev/nvme*"|awk '{print $1}'|wc -l)
+	nvme_num=$(nvme list |grep "/dev/nvme"|awk '{print $1}'|wc -l)
 	./nvme disconnect -n "nqn.2016-06.io.spdk:cnode1"
 	if [ $nvme_num -le $nvme_num_before_connection ]; then
 		echo "spdk/nvme-cli connect target devices failed"
@@ -70,7 +70,7 @@ if [ -d  $spdk_nvme_cli ]; then
 	fi
 fi
 
-$rpc_py delete_nvmf_subsystem nqn.2016-06.io.spdk:cnode1
+$rpc_py nvmf_delete_subsystem nqn.2016-06.io.spdk:cnode1
 trap - SIGINT SIGTERM EXIT
 
 nvmftestfini

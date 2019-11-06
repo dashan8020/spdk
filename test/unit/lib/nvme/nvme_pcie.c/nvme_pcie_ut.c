@@ -153,7 +153,13 @@ spdk_pci_device_cfg_write32(struct spdk_pci_device *dev, uint32_t value, uint32_
 }
 
 int
-spdk_pci_device_claim(const struct spdk_pci_addr *pci_addr)
+spdk_pci_device_claim(struct spdk_pci_device *dev)
+{
+	abort();
+}
+
+void
+spdk_pci_device_unclaim(struct spdk_pci_device *dev)
 {
 	abort();
 }
@@ -265,12 +271,6 @@ nvme_completion_poll_cb(void *arg, const struct spdk_nvme_cpl *cpl)
 
 int32_t
 spdk_nvme_qpair_process_completions(struct spdk_nvme_qpair *qpair, uint32_t max_completions)
-{
-	abort();
-}
-
-void
-nvme_qpair_enable(struct spdk_nvme_qpair *qpair)
 {
 	abort();
 }

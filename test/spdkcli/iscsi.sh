@@ -14,11 +14,11 @@ trap 'on_error_exit;' ERR
 
 timing_enter run_iscsi_tgt
 
-# Running iscsi target with --wait-for-rpc. Implies start_subsystem_init later
+# Running iscsi target with --wait-for-rpc. Implies framework_start_init later
 $rootdir/app/iscsi_tgt/iscsi_tgt -m 0x3 -p 0 -s 4096 --wait-for-rpc &
 iscsi_tgt_pid=$!
 waitforlisten $iscsi_tgt_pid
-$rootdir/scripts/rpc.py start_subsystem_init
+$rootdir/scripts/rpc.py framework_start_init
 
 timing_exit run_iscsi_tgt
 
@@ -34,7 +34,7 @@ $spdkcli_job "'/bdevs/malloc create 32 512 Malloc0' 'Malloc0' True
 '/iscsi/initiator_groups add_initiator 2 ANW 10.0.2.16/32' 'hostname=ANW, netmask=10.0.2.16' True
 '/iscsi/target_nodes create Target0 Target0_alias \"Malloc0:0 Malloc1:1\" 1:2 64 g=1' 'Target0' True
 '/iscsi/target_nodes create Target1 Target1_alias Malloc2:0 1:2 64 g=1' 'Target1' True
-'/iscsi/target_nodes/iqn.2016-06.io.spdk:Target0 add_pg_ig_maps \"1:3 2:2\"' 'portal_group1 - initiator_group3' True
+'/iscsi/target_nodes/iqn.2016-06.io.spdk:Target0 iscsi_target_node_add_pg_ig_maps \"1:3 2:2\"' 'portal_group1 - initiator_group3' True
 '/iscsi/target_nodes add_lun iqn.2016-06.io.spdk:Target1 Malloc3 2' 'Malloc3' True
 '/iscsi/auth_groups create 1 \"user:test1 secret:test1 muser:mutual_test1 msecret:mutual_test1,\
 user:test3 secret:test3 muser:mutual_test3 msecret:mutual_test3\"' 'user=test3' True
@@ -55,7 +55,7 @@ $spdkcli_job "'/iscsi/auth_groups delete_secret 1 test2' 'user=test2'
 '/iscsi/auth_groups delete_secret_all 1' 'user=test1'
 '/iscsi/auth_groups delete 1' 'user=test1'
 '/iscsi/auth_groups delete_all' 'user=test4'
-'/iscsi/target_nodes/iqn.2016-06.io.spdk:Target0 delete_pg_ig_maps \"1:3 2:2\"' 'portal_group1 - initiator_group3'
+'/iscsi/target_nodes/iqn.2016-06.io.spdk:Target0 iscsi_target_node_remove_pg_ig_maps \"1:3 2:2\"' 'portal_group1 - initiator_group3'
 '/iscsi/target_nodes delete iqn.2016-06.io.spdk:Target1' 'Target1'
 '/iscsi/target_nodes delete_all' 'Target0'
 '/iscsi/initiator_groups delete_initiator 2 ANW 10.0.2.16/32' 'ANW'

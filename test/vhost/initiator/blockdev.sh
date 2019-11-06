@@ -48,8 +48,8 @@ if [[ $EUID -ne 0 ]]; then
 	exit 1
 fi
 
-trap 'rm -f *.state $rootdir/spdk.tar.gz $rootdir/fio.tar.gz $(get_vhost_dir)/Virtio0;\
- error_exit "${FUNCNAME}""${LINENO}"' ERR SIGTERM SIGABRT
+trap 'rm -f *.state $rootdir/spdk.tar.gz $rootdir/fio.tar.gz $(get_vhost_dir)/Virtio0;
+	error_exit "${FUNCNAME}""${LINENO}"' ERR SIGTERM SIGABRT
 
 function run_spdk_fio() {
 	fio_bdev --ioengine=spdk_bdev "$@" --spdk_mem=1024 --spdk_single_seg=1
@@ -59,28 +59,28 @@ function create_bdev_config()
 {
 	local vbdevs
 
-	if [ -z "$($RPC_PY get_bdevs | jq '.[] | select(.name=="Nvme0n1")')" ]; then
+	if [ -z "$($RPC_PY bdev_get_bdevs | jq '.[] | select(.name=="Nvme0n1")')" ]; then
 		error "Nvme0n1 bdev not found!"
 	fi
 
-	$RPC_PY construct_split_vbdev Nvme0n1 6
+	$RPC_PY bdev_split_create Nvme0n1 6
 
-	$RPC_PY construct_vhost_scsi_controller naa.Nvme0n1_scsi0.0
-	$RPC_PY add_vhost_scsi_lun naa.Nvme0n1_scsi0.0 0 Nvme0n1p0
-	$RPC_PY add_vhost_scsi_lun naa.Nvme0n1_scsi0.0 1 Nvme0n1p1
-	$RPC_PY add_vhost_scsi_lun naa.Nvme0n1_scsi0.0 2 Nvme0n1p2
-	$RPC_PY add_vhost_scsi_lun naa.Nvme0n1_scsi0.0 3 Nvme0n1p3
+	$RPC_PY vhost_create_scsi_controller naa.Nvme0n1_scsi0.0
+	$RPC_PY vhost_scsi_controller_add_target naa.Nvme0n1_scsi0.0 0 Nvme0n1p0
+	$RPC_PY vhost_scsi_controller_add_target naa.Nvme0n1_scsi0.0 1 Nvme0n1p1
+	$RPC_PY vhost_scsi_controller_add_target naa.Nvme0n1_scsi0.0 2 Nvme0n1p2
+	$RPC_PY vhost_scsi_controller_add_target naa.Nvme0n1_scsi0.0 3 Nvme0n1p3
 
-	$RPC_PY construct_vhost_blk_controller naa.Nvme0n1_blk0.0 Nvme0n1p4
-	$RPC_PY construct_vhost_blk_controller naa.Nvme0n1_blk1.0 Nvme0n1p5
+	$RPC_PY vhost_create_blk_controller naa.Nvme0n1_blk0.0 Nvme0n1p4
+	$RPC_PY vhost_create_blk_controller naa.Nvme0n1_blk1.0 Nvme0n1p5
 
 	$RPC_PY bdev_malloc_create 128 512 --name Malloc0
-	$RPC_PY construct_vhost_scsi_controller naa.Malloc0.0
-	$RPC_PY add_vhost_scsi_lun naa.Malloc0.0 0 Malloc0
+	$RPC_PY vhost_create_scsi_controller naa.Malloc0.0
+	$RPC_PY vhost_scsi_controller_add_target naa.Malloc0.0 0 Malloc0
 
 	$RPC_PY bdev_malloc_create 128 4096 --name Malloc1
-	$RPC_PY construct_vhost_scsi_controller naa.Malloc1.0
-	$RPC_PY add_vhost_scsi_lun naa.Malloc1.0 0 Malloc1
+	$RPC_PY vhost_create_scsi_controller naa.Malloc1.0
+	$RPC_PY vhost_scsi_controller_add_target naa.Malloc1.0 0 Malloc1
 
 	vbdevs=$(discover_bdevs $rootdir $testdir/bdev.conf)
 	virtio_bdevs=$(jq -r '[.[].name] | join(":")' <<< $vbdevs)
@@ -107,7 +107,7 @@ run_spdk_fio $testdir/bdev.fio --filename=$virtio_with_unmap --spdk_conf=$testdi
 	--spdk_conf=$testdir/bdev.conf
 timing_exit run_spdk_fio_unmap
 
-$RPC_PY delete_nvme_controller Nvme0
+$RPC_PY bdev_nvme_detach_controller Nvme0
 
 timing_enter vhost_kill
 vhost_kill 0

@@ -612,18 +612,27 @@ spdk_app_start(struct spdk_app_opts *opts, spdk_msg_fn start_fn,
 
 	config = spdk_app_setup_conf(opts->config_file);
 	if (config == NULL) {
-		goto app_start_setup_conf_err;
+		return 1;
 	}
 
 	if (spdk_app_read_config_file_global_params(opts) < 0) {
-		goto app_start_setup_conf_err;
+		spdk_conf_free(config);
+		return 1;
 	}
+
+	memset(&g_spdk_app, 0, sizeof(g_spdk_app));
+	g_spdk_app.config = config;
+	g_spdk_app.json_config_file = opts->json_config_file;
+	g_spdk_app.rpc_addr = opts->rpc_addr;
+	g_spdk_app.shm_id = opts->shm_id;
+	g_spdk_app.shutdown_cb = opts->shutdown_cb;
+	g_spdk_app.rc = 0;
 
 	spdk_log_set_level(SPDK_APP_DEFAULT_LOG_LEVEL);
 	spdk_log_set_backtrace_level(SPDK_APP_DEFAULT_BACKTRACE_LOG_LEVEL);
 
 	if (spdk_app_setup_env(opts) < 0) {
-		goto app_start_setup_conf_err;
+		return 1;
 	}
 
 	spdk_log_open(opts->log);
@@ -636,13 +645,13 @@ spdk_app_start(struct spdk_app_opts *opts, spdk_msg_fn start_fn,
 	 */
 	if ((rc = spdk_reactors_init()) != 0) {
 		SPDK_ERRLOG("Reactor Initilization failed: rc = %d\n", rc);
-		goto app_start_log_close_err;
+		return 1;
 	}
 
 	tmp_cpumask = spdk_cpuset_alloc();
 	if (tmp_cpumask == NULL) {
 		SPDK_ERRLOG("spdk_cpuset_alloc() failed\n");
-		goto app_start_log_close_err;
+		return 1;
 	}
 
 	spdk_cpuset_zero(tmp_cpumask);
@@ -654,7 +663,7 @@ spdk_app_start(struct spdk_app_opts *opts, spdk_msg_fn start_fn,
 	spdk_cpuset_free(tmp_cpumask);
 	if (!g_app_thread) {
 		SPDK_ERRLOG("Unable to create an spdk_thread for initialization\n");
-		goto app_start_log_close_err;
+		return 1;
 	}
 
 	/*
@@ -665,20 +674,12 @@ spdk_app_start(struct spdk_app_opts *opts, spdk_msg_fn start_fn,
 	 * in spdk_app_setup_signal_handlers().
 	 */
 	if (spdk_app_setup_trace(opts) != 0) {
-		goto app_start_log_close_err;
+		return 1;
 	}
 
 	if ((rc = spdk_app_setup_signal_handlers(opts)) != 0) {
-		goto app_start_trace_cleanup_err;
+		return 1;
 	}
-
-	memset(&g_spdk_app, 0, sizeof(g_spdk_app));
-	g_spdk_app.config = config;
-	g_spdk_app.json_config_file = opts->json_config_file;
-	g_spdk_app.rpc_addr = opts->rpc_addr;
-	g_spdk_app.shm_id = opts->shm_id;
-	g_spdk_app.shutdown_cb = opts->shutdown_cb;
-	g_spdk_app.rc = 0;
 
 	g_delay_subsystem_init = opts->delay_subsystem_init;
 	g_start_fn = start_fn;
@@ -690,15 +691,6 @@ spdk_app_start(struct spdk_app_opts *opts, spdk_msg_fn start_fn,
 	spdk_reactors_start();
 
 	return g_spdk_app.rc;
-
-app_start_trace_cleanup_err:
-	spdk_trace_cleanup();
-
-app_start_log_close_err:
-	spdk_log_close();
-
-app_start_setup_conf_err:
-	return 1;
 }
 
 void
@@ -1056,7 +1048,7 @@ spdk_app_usage(void)
 }
 
 static void
-spdk_rpc_start_subsystem_init_cpl(int rc, void *arg1)
+spdk_rpc_framework_start_init_cpl(int rc, void *arg1)
 {
 	struct spdk_jsonrpc_request *request = arg1;
 	struct spdk_json_write_ctx *w;
@@ -1065,7 +1057,7 @@ spdk_rpc_start_subsystem_init_cpl(int rc, void *arg1)
 
 	if (rc) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
-						 "subsystem_initialization failed");
+						 "framework_initialization failed");
 		return;
 	}
 
@@ -1078,18 +1070,19 @@ spdk_rpc_start_subsystem_init_cpl(int rc, void *arg1)
 }
 
 static void
-spdk_rpc_start_subsystem_init(struct spdk_jsonrpc_request *request,
+spdk_rpc_framework_start_init(struct spdk_jsonrpc_request *request,
 			      const struct spdk_json_val *params)
 {
 	if (params != NULL) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
-						 "start_subsystem_init requires no parameters");
+						 "framework_start_init requires no parameters");
 		return;
 	}
 
-	spdk_subsystem_init(spdk_rpc_start_subsystem_init_cpl, request);
+	spdk_subsystem_init(spdk_rpc_framework_start_init_cpl, request);
 }
-SPDK_RPC_REGISTER("start_subsystem_init", spdk_rpc_start_subsystem_init, SPDK_RPC_STARTUP)
+SPDK_RPC_REGISTER("framework_start_init", spdk_rpc_framework_start_init, SPDK_RPC_STARTUP)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(framework_start_init, start_subsystem_init)
 
 struct subsystem_init_poller_ctx {
 	struct spdk_poller *init_poller;
@@ -1114,7 +1107,7 @@ spdk_rpc_subsystem_init_poller_ctx(void *ctx)
 }
 
 static void
-spdk_rpc_wait_subsystem_init(struct spdk_jsonrpc_request *request,
+spdk_rpc_framework_wait_init(struct spdk_jsonrpc_request *request,
 			     const struct spdk_json_val *params)
 {
 	struct spdk_json_write_ctx *w;
@@ -1135,5 +1128,6 @@ spdk_rpc_wait_subsystem_init(struct spdk_jsonrpc_request *request,
 		ctx->init_poller = spdk_poller_register(spdk_rpc_subsystem_init_poller_ctx, ctx, 0);
 	}
 }
-SPDK_RPC_REGISTER("wait_subsystem_init", spdk_rpc_wait_subsystem_init,
+SPDK_RPC_REGISTER("framework_wait_init", spdk_rpc_framework_wait_init,
 		  SPDK_RPC_STARTUP | SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(framework_wait_init, wait_subsystem_init)

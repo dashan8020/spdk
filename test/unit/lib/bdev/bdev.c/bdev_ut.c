@@ -1,8 +1,8 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright (c) Intel Corporation.
- *   All rights reserved.
+ *   Copyright (c) Intel Corporation. All rights reserved.
+ *   Copyright (c) 2019 Mellanox Technologies LTD. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -67,6 +67,8 @@ int g_count;
 enum spdk_bdev_event_type g_event_type1;
 enum spdk_bdev_event_type g_event_type2;
 struct spdk_histogram_data *g_histogram;
+void *g_unregister_arg;
+int g_unregister_rc;
 
 void
 spdk_scsi_nvme_translate(const struct spdk_bdev_io *bdev_io,
@@ -417,6 +419,35 @@ get_device_stat_cb(struct spdk_bdev *bdev, struct spdk_bdev_io_stat *stat, void 
 }
 
 static void
+bdev_unregister_cb(void *cb_arg, int rc)
+{
+	g_unregister_arg = cb_arg;
+	g_unregister_rc = rc;
+}
+
+static void
+bdev_open_cb1(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *event_ctx)
+{
+	struct spdk_bdev_desc *desc = *(struct spdk_bdev_desc **)event_ctx;
+
+	g_event_type1 = type;
+	if (SPDK_BDEV_EVENT_REMOVE == type) {
+		spdk_bdev_close(desc);
+	}
+}
+
+static void
+bdev_open_cb2(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *event_ctx)
+{
+	struct spdk_bdev_desc *desc = *(struct spdk_bdev_desc **)event_ctx;
+
+	g_event_type2 = type;
+	if (SPDK_BDEV_EVENT_REMOVE == type) {
+		spdk_bdev_close(desc);
+	}
+}
+
+static void
 get_device_stat_test(void)
 {
 	struct spdk_bdev *bdev;
@@ -608,6 +639,7 @@ num_blocks_test(void)
 {
 	struct spdk_bdev bdev;
 	struct spdk_bdev_desc *desc = NULL;
+	struct spdk_bdev_desc *desc_ext = NULL;
 	int rc;
 
 	memset(&bdev, 0, sizeof(bdev));
@@ -632,10 +664,30 @@ num_blocks_test(void)
 	/* Shrinking block number */
 	CU_ASSERT(spdk_bdev_notify_blockcnt_change(&bdev, 20) != 0);
 
+	/* In case bdev opened with ext API */
+	rc = spdk_bdev_open_ext("num_blocks", false, bdev_open_cb1, &desc_ext, &desc_ext);
+	CU_ASSERT(rc == 0);
+	SPDK_CU_ASSERT_FATAL(desc_ext != NULL);
+
+	g_event_type1 = 0xFF;
+	/* Growing block number */
+	CU_ASSERT(spdk_bdev_notify_blockcnt_change(&bdev, 90) == 0);
+
+	poll_threads();
+	CU_ASSERT_EQUAL(g_event_type1, SPDK_BDEV_EVENT_RESIZE);
+
+	g_event_type1 = 0xFF;
+	/* Growing block number and closing */
+	CU_ASSERT(spdk_bdev_notify_blockcnt_change(&bdev, 100) == 0);
+
 	spdk_bdev_close(desc);
+	spdk_bdev_close(desc_ext);
 	spdk_bdev_unregister(&bdev, NULL, NULL);
 
 	poll_threads();
+
+	/* Callback is not called for closed device */
+	CU_ASSERT_EQUAL(g_event_type1, 0xFF);
 }
 
 static void
@@ -1207,6 +1259,184 @@ bdev_io_split(void)
 	CU_ASSERT(g_io_done == true);
 	CU_ASSERT(g_bdev_ut_channel->outstanding_io_count == 0);
 
+	/* Test multi vector command that needs to be split due to the IO boundary and
+	 * the capacity of child iovs. Especially test the case when the command is
+	 * split due to the capacity of child iovs, the tail address is not aligned with
+	 * block size and is rewinded to the aligned address.
+	 *
+	 * The iovecs used in read request is complex but is based on the data
+	 * collected in the real issue. We change the base addresses but keep the lengths
+	 * not to loose the credibility of the test.
+	 */
+	bdev->optimal_io_boundary = 128;
+	g_io_done = false;
+	g_io_status = 0;
+
+	for (i = 0; i < 31; i++) {
+		iov[i].iov_base = (void *)(0xFEED0000000 + (i << 20));
+		iov[i].iov_len = 1024;
+	}
+	iov[31].iov_base = (void *)0xFEED1F00000;
+	iov[31].iov_len = 32768;
+	iov[32].iov_base = (void *)0xFEED2000000;
+	iov[32].iov_len = 160;
+	iov[33].iov_base = (void *)0xFEED2100000;
+	iov[33].iov_len = 4096;
+	iov[34].iov_base = (void *)0xFEED2200000;
+	iov[34].iov_len = 4096;
+	iov[35].iov_base = (void *)0xFEED2300000;
+	iov[35].iov_len = 4096;
+	iov[36].iov_base = (void *)0xFEED2400000;
+	iov[36].iov_len = 4096;
+	iov[37].iov_base = (void *)0xFEED2500000;
+	iov[37].iov_len = 4096;
+	iov[38].iov_base = (void *)0xFEED2600000;
+	iov[38].iov_len = 4096;
+	iov[39].iov_base = (void *)0xFEED2700000;
+	iov[39].iov_len = 4096;
+	iov[40].iov_base = (void *)0xFEED2800000;
+	iov[40].iov_len = 4096;
+	iov[41].iov_base = (void *)0xFEED2900000;
+	iov[41].iov_len = 4096;
+	iov[42].iov_base = (void *)0xFEED2A00000;
+	iov[42].iov_len = 4096;
+	iov[43].iov_base = (void *)0xFEED2B00000;
+	iov[43].iov_len = 12288;
+	iov[44].iov_base = (void *)0xFEED2C00000;
+	iov[44].iov_len = 8192;
+	iov[45].iov_base = (void *)0xFEED2F00000;
+	iov[45].iov_len = 4096;
+	iov[46].iov_base = (void *)0xFEED3000000;
+	iov[46].iov_len = 4096;
+	iov[47].iov_base = (void *)0xFEED3100000;
+	iov[47].iov_len = 4096;
+	iov[48].iov_base = (void *)0xFEED3200000;
+	iov[48].iov_len = 24576;
+	iov[49].iov_base = (void *)0xFEED3300000;
+	iov[49].iov_len = 16384;
+	iov[50].iov_base = (void *)0xFEED3400000;
+	iov[50].iov_len = 12288;
+	iov[51].iov_base = (void *)0xFEED3500000;
+	iov[51].iov_len = 4096;
+	iov[52].iov_base = (void *)0xFEED3600000;
+	iov[52].iov_len = 4096;
+	iov[53].iov_base = (void *)0xFEED3700000;
+	iov[53].iov_len = 4096;
+	iov[54].iov_base = (void *)0xFEED3800000;
+	iov[54].iov_len = 28672;
+	iov[55].iov_base = (void *)0xFEED3900000;
+	iov[55].iov_len = 20480;
+	iov[56].iov_base = (void *)0xFEED3A00000;
+	iov[56].iov_len = 4096;
+	iov[57].iov_base = (void *)0xFEED3B00000;
+	iov[57].iov_len = 12288;
+	iov[58].iov_base = (void *)0xFEED3C00000;
+	iov[58].iov_len = 4096;
+	iov[59].iov_base = (void *)0xFEED3D00000;
+	iov[59].iov_len = 4096;
+	iov[60].iov_base = (void *)0xFEED3E00000;
+	iov[60].iov_len = 352;
+
+	/* The 1st child IO must be from iov[0] to iov[31] split by the capacity
+	 * of child iovs,
+	 */
+	expected_io = ut_alloc_expected_io(SPDK_BDEV_IO_TYPE_READ, 0, 126, 32);
+	for (i = 0; i < 32; i++) {
+		ut_expected_io_set_iov(expected_io, i, iov[i].iov_base, iov[i].iov_len);
+	}
+	TAILQ_INSERT_TAIL(&g_bdev_ut_channel->expected_io, expected_io, link);
+
+	/* The 2nd child IO must be from iov[32] to the first 864 bytes of iov[33]
+	 * split by the IO boundary requirement.
+	 */
+	expected_io = ut_alloc_expected_io(SPDK_BDEV_IO_TYPE_READ, 126, 2, 2);
+	ut_expected_io_set_iov(expected_io, 0, iov[32].iov_base, iov[32].iov_len);
+	ut_expected_io_set_iov(expected_io, 1, iov[33].iov_base, 864);
+	TAILQ_INSERT_TAIL(&g_bdev_ut_channel->expected_io, expected_io, link);
+
+	/* The 3rd child IO must be from the remaining 3232 bytes of iov[33] to
+	 * the first 864 bytes of iov[46] split by the IO boundary requirement.
+	 */
+	expected_io = ut_alloc_expected_io(SPDK_BDEV_IO_TYPE_READ, 128, 128, 14);
+	ut_expected_io_set_iov(expected_io, 0, (void *)((uintptr_t)iov[33].iov_base + 864),
+			       iov[33].iov_len - 864);
+	ut_expected_io_set_iov(expected_io, 1, iov[34].iov_base, iov[34].iov_len);
+	ut_expected_io_set_iov(expected_io, 2, iov[35].iov_base, iov[35].iov_len);
+	ut_expected_io_set_iov(expected_io, 3, iov[36].iov_base, iov[36].iov_len);
+	ut_expected_io_set_iov(expected_io, 4, iov[37].iov_base, iov[37].iov_len);
+	ut_expected_io_set_iov(expected_io, 5, iov[38].iov_base, iov[38].iov_len);
+	ut_expected_io_set_iov(expected_io, 6, iov[39].iov_base, iov[39].iov_len);
+	ut_expected_io_set_iov(expected_io, 7, iov[40].iov_base, iov[40].iov_len);
+	ut_expected_io_set_iov(expected_io, 8, iov[41].iov_base, iov[41].iov_len);
+	ut_expected_io_set_iov(expected_io, 9, iov[42].iov_base, iov[42].iov_len);
+	ut_expected_io_set_iov(expected_io, 10, iov[43].iov_base, iov[43].iov_len);
+	ut_expected_io_set_iov(expected_io, 11, iov[44].iov_base, iov[44].iov_len);
+	ut_expected_io_set_iov(expected_io, 12, iov[45].iov_base, iov[45].iov_len);
+	ut_expected_io_set_iov(expected_io, 13, iov[46].iov_base, 864);
+	TAILQ_INSERT_TAIL(&g_bdev_ut_channel->expected_io, expected_io, link);
+
+	/* The 4th child IO must be from the remaining 3232 bytes of iov[46] to the
+	 * first 864 bytes of iov[52] split by the IO boundary requirement.
+	 */
+	expected_io = ut_alloc_expected_io(SPDK_BDEV_IO_TYPE_READ, 256, 128, 7);
+	ut_expected_io_set_iov(expected_io, 0, (void *)((uintptr_t)iov[46].iov_base + 864),
+			       iov[46].iov_len - 864);
+	ut_expected_io_set_iov(expected_io, 1, iov[47].iov_base, iov[47].iov_len);
+	ut_expected_io_set_iov(expected_io, 2, iov[48].iov_base, iov[48].iov_len);
+	ut_expected_io_set_iov(expected_io, 3, iov[49].iov_base, iov[49].iov_len);
+	ut_expected_io_set_iov(expected_io, 4, iov[50].iov_base, iov[50].iov_len);
+	ut_expected_io_set_iov(expected_io, 5, iov[51].iov_base, iov[51].iov_len);
+	ut_expected_io_set_iov(expected_io, 6, iov[52].iov_base, 864);
+	TAILQ_INSERT_TAIL(&g_bdev_ut_channel->expected_io, expected_io, link);
+
+	/* The 5th child IO must be from the remaining 3232 bytes of iov[52] to
+	 * the first 4096 bytes of iov[57] split by the IO boundary requirement.
+	 */
+	expected_io = ut_alloc_expected_io(SPDK_BDEV_IO_TYPE_READ, 384, 128, 6);
+	ut_expected_io_set_iov(expected_io, 0, (void *)((uintptr_t)iov[52].iov_base + 864),
+			       iov[52].iov_len - 864);
+	ut_expected_io_set_iov(expected_io, 1, iov[53].iov_base, iov[53].iov_len);
+	ut_expected_io_set_iov(expected_io, 2, iov[54].iov_base, iov[54].iov_len);
+	ut_expected_io_set_iov(expected_io, 3, iov[55].iov_base, iov[55].iov_len);
+	ut_expected_io_set_iov(expected_io, 4, iov[56].iov_base, iov[56].iov_len);
+	ut_expected_io_set_iov(expected_io, 5, iov[57].iov_base, 4960);
+	TAILQ_INSERT_TAIL(&g_bdev_ut_channel->expected_io, expected_io, link);
+
+	/* The 6th child IO must be from the remaining 7328 bytes of iov[57]
+	 * to the first 3936 bytes of iov[58] split by the capacity of child iovs.
+	 */
+	expected_io = ut_alloc_expected_io(SPDK_BDEV_IO_TYPE_READ, 512, 30, 3);
+	ut_expected_io_set_iov(expected_io, 0, (void *)((uintptr_t)iov[57].iov_base + 4960),
+			       iov[57].iov_len - 4960);
+	ut_expected_io_set_iov(expected_io, 1, iov[58].iov_base, iov[58].iov_len);
+	ut_expected_io_set_iov(expected_io, 2, iov[59].iov_base, 3936);
+	TAILQ_INSERT_TAIL(&g_bdev_ut_channel->expected_io, expected_io, link);
+
+	/* The 7th child IO is from the remaining 160 bytes of iov[59] and iov[60]. */
+	expected_io = ut_alloc_expected_io(SPDK_BDEV_IO_TYPE_READ, 542, 1, 2);
+	ut_expected_io_set_iov(expected_io, 0, (void *)((uintptr_t)iov[59].iov_base + 3936),
+			       iov[59].iov_len - 3936);
+	ut_expected_io_set_iov(expected_io, 1, iov[60].iov_base, iov[60].iov_len);
+	TAILQ_INSERT_TAIL(&g_bdev_ut_channel->expected_io, expected_io, link);
+
+	rc = spdk_bdev_readv_blocks(desc, io_ch, iov, 61, 0, 543, io_done, NULL);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(g_io_done == false);
+
+	CU_ASSERT(g_bdev_ut_channel->outstanding_io_count == 1);
+	stub_complete_io(1);
+	CU_ASSERT(g_io_done == false);
+
+	CU_ASSERT(g_bdev_ut_channel->outstanding_io_count == 5);
+	stub_complete_io(5);
+	CU_ASSERT(g_io_done == false);
+
+	CU_ASSERT(g_bdev_ut_channel->outstanding_io_count == 1);
+	stub_complete_io(1);
+	CU_ASSERT(g_io_done == true);
+	CU_ASSERT(g_bdev_ut_channel->outstanding_io_count == 0);
+	CU_ASSERT(g_io_status == SPDK_BDEV_IO_STATUS_SUCCESS);
+
 	/* Test a WRITE_ZEROES that would span an I/O boundary.  WRITE_ZEROES should not be
 	 * split, so test that.
 	 */
@@ -1267,6 +1497,71 @@ bdev_io_split(void)
 	stub_complete_io(1);
 	CU_ASSERT(g_io_done == true);
 	CU_ASSERT(g_io_status == SPDK_BDEV_IO_STATUS_FAILED);
+
+	/* for this test we will create the following conditions to hit the code path where
+	 * we are trying to send and IO following a split that has no iovs because we had to
+	 * trim them for alignment reasons.
+	 *
+	 * - 16K boundary, our IO will start at offset 0 with a length of 0x4200
+	 * - Our IOVs are 0x212 in size so that we run into the 16K boundary at child IOV
+	 *   position 30 and overshoot by 0x2e.
+	 * - That means we'll send the IO and loop back to pick up the remaining bytes at
+	 *   child IOV index 31. When we do, we find that we have to shorten index 31 by 0x2e
+	 *   which eliniates that vector so we just send the first split IO with 30 vectors
+	 *   and let the completion pick up the last 2 vectors.
+	 */
+	bdev->optimal_io_boundary = 32;
+	bdev->split_on_optimal_io_boundary = true;
+	g_io_done = false;
+
+	/* Init all parent IOVs to 0x212 */
+	for (i = 0; i < BDEV_IO_NUM_CHILD_IOV + 2; i++) {
+		iov[i].iov_base = (void *)((i + 1) * 0x10000);
+		iov[i].iov_len = 0x212;
+	}
+
+	expected_io = ut_alloc_expected_io(SPDK_BDEV_IO_TYPE_READ, 0, BDEV_IO_NUM_CHILD_IOV,
+					   BDEV_IO_NUM_CHILD_IOV - 1);
+	/* expect 0-29 to be 1:1 with the parent iov */
+	for (i = 0; i < BDEV_IO_NUM_CHILD_IOV - 2; i++) {
+		ut_expected_io_set_iov(expected_io, i, iov[i].iov_base, iov[i].iov_len);
+	}
+
+	/* expect index 30 to be shortened to 0x1e4 (0x212 - 0x1e) because of the alignment
+	 * where 0x1e is the amount we overshot the 16K boundary
+	 */
+	ut_expected_io_set_iov(expected_io, BDEV_IO_NUM_CHILD_IOV - 2,
+			       (void *)(iov[BDEV_IO_NUM_CHILD_IOV - 2].iov_base), 0x1e4);
+	TAILQ_INSERT_TAIL(&g_bdev_ut_channel->expected_io, expected_io, link);
+
+	/* 2nd child IO will have 2 remaining vectors, one to pick up from the one that was
+	 * shortened that take it to the next boundary and then a final one to get us to
+	 * 0x4200 bytes for the IO.
+	 */
+	expected_io = ut_alloc_expected_io(SPDK_BDEV_IO_TYPE_READ, BDEV_IO_NUM_CHILD_IOV,
+					   BDEV_IO_NUM_CHILD_IOV, 2);
+	/* position 30 picked up the remaining bytes to the next boundary */
+	ut_expected_io_set_iov(expected_io, 0,
+			       (void *)(iov[BDEV_IO_NUM_CHILD_IOV - 2].iov_base + 0x1e4), 0x2e);
+
+	/* position 31 picked the the rest of the trasnfer to get us to 0x4200 */
+	ut_expected_io_set_iov(expected_io, 1,
+			       (void *)(iov[BDEV_IO_NUM_CHILD_IOV - 1].iov_base), 0x1d2);
+	TAILQ_INSERT_TAIL(&g_bdev_ut_channel->expected_io, expected_io, link);
+
+	rc = spdk_bdev_readv_blocks(desc, io_ch, iov, BDEV_IO_NUM_CHILD_IOV + 1, 0,
+				    BDEV_IO_NUM_CHILD_IOV + 1, io_done, NULL);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(g_io_done == false);
+
+	CU_ASSERT(g_bdev_ut_channel->outstanding_io_count == 1);
+	stub_complete_io(1);
+	CU_ASSERT(g_io_done == false);
+
+	CU_ASSERT(g_bdev_ut_channel->outstanding_io_count == 1);
+	stub_complete_io(1);
+	CU_ASSERT(g_io_done == true);
+	CU_ASSERT(g_bdev_ut_channel->outstanding_io_count == 0);
 
 	spdk_put_io_channel(io_ch);
 	spdk_bdev_close(desc);
@@ -2001,21 +2296,38 @@ bdev_open_while_hotremove(void)
 }
 
 static void
-bdev_open_cb1(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *event_ctx)
+bdev_close_while_hotremove(void)
 {
-	struct spdk_bdev_desc *desc = *(struct spdk_bdev_desc **)event_ctx;
+	struct spdk_bdev *bdev;
+	struct spdk_bdev_desc *desc = NULL;
+	int rc = 0;
 
-	g_event_type1 = type;
+	bdev = allocate_bdev("bdev");
+
+	rc = spdk_bdev_open_ext("bdev", true, bdev_open_cb1, &desc, &desc);
+	CU_ASSERT_EQUAL(rc, 0);
+
+	/* Simulate hot-unplug by unregistering bdev */
+	g_event_type1 = 0xFF;
+	g_unregister_arg = NULL;
+	g_unregister_rc = -1;
+	spdk_bdev_unregister(bdev, bdev_unregister_cb, (void *)0x12345678);
+	/* Close device while remove event is in flight */
 	spdk_bdev_close(desc);
-}
 
-static void
-bdev_open_cb2(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *event_ctx)
-{
-	struct spdk_bdev_desc *desc = *(struct spdk_bdev_desc **)event_ctx;
+	/* Ensure that unregister callback is delayed */
+	CU_ASSERT_EQUAL(g_unregister_arg, NULL);
+	CU_ASSERT_EQUAL(g_unregister_rc, -1);
 
-	g_event_type2 = type;
-	spdk_bdev_close(desc);
+	poll_threads();
+
+	/* Event callback shall not be issued because device was closed */
+	CU_ASSERT_EQUAL(g_event_type1, 0xFF);
+	/* Unregister callback is issued */
+	CU_ASSERT_EQUAL(g_unregister_arg, (void *)0x12345678);
+	CU_ASSERT_EQUAL(g_unregister_rc, 0);
+
+	free_bdev(bdev);
 }
 
 static void
@@ -2085,6 +2397,7 @@ main(int argc, char **argv)
 		CU_add_test(suite, "bdev_histograms", bdev_histograms) == NULL ||
 		CU_add_test(suite, "bdev_write_zeroes", bdev_write_zeroes) == NULL ||
 		CU_add_test(suite, "bdev_open_while_hotremove", bdev_open_while_hotremove) == NULL ||
+		CU_add_test(suite, "bdev_close_while_hotremove", bdev_close_while_hotremove) == NULL ||
 		CU_add_test(suite, "bdev_open_ext", bdev_open_ext) == NULL
 	) {
 		CU_cleanup_registry();

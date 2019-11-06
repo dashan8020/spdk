@@ -41,8 +41,8 @@ static const struct spdk_json_object_decoder nvmf_rpc_subsystem_tgt_opts_decoder
 };
 
 static void
-spdk_rpc_set_nvmf_target_max_subsystems(struct spdk_jsonrpc_request *request,
-					const struct spdk_json_val *params)
+spdk_rpc_nvmf_set_max_subsystems(struct spdk_jsonrpc_request *request,
+				 const struct spdk_json_val *params)
 {
 	struct spdk_json_write_ctx *w;
 	uint32_t max_subsystems = 0;
@@ -70,8 +70,9 @@ spdk_rpc_set_nvmf_target_max_subsystems(struct spdk_jsonrpc_request *request,
 	spdk_json_write_bool(w, true);
 	spdk_jsonrpc_end_result(request, w);
 }
-SPDK_RPC_REGISTER("set_nvmf_target_max_subsystems", spdk_rpc_set_nvmf_target_max_subsystems,
+SPDK_RPC_REGISTER("nvmf_set_max_subsystems", spdk_rpc_nvmf_set_max_subsystems,
 		  SPDK_RPC_STARTUP)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(nvmf_set_max_subsystems, set_nvmf_target_max_subsystems)
 
 static int decode_conn_sched(const struct spdk_json_val *val, void *out)
 {
@@ -97,8 +98,8 @@ static const struct spdk_json_object_decoder nvmf_rpc_subsystem_tgt_conf_decoder
 };
 
 static void
-spdk_rpc_set_nvmf_target_config(struct spdk_jsonrpc_request *request,
-				const struct spdk_json_val *params)
+spdk_rpc_nvmf_set_config(struct spdk_jsonrpc_request *request,
+			 const struct spdk_json_val *params)
 {
 	struct spdk_nvmf_tgt_conf *conf;
 	struct spdk_json_write_ctx *w;
@@ -138,4 +139,5 @@ spdk_rpc_set_nvmf_target_config(struct spdk_jsonrpc_request *request,
 	spdk_json_write_bool(w, true);
 	spdk_jsonrpc_end_result(request, w);
 }
-SPDK_RPC_REGISTER("set_nvmf_target_config", spdk_rpc_set_nvmf_target_config, SPDK_RPC_STARTUP)
+SPDK_RPC_REGISTER("nvmf_set_config", spdk_rpc_nvmf_set_config, SPDK_RPC_STARTUP)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(nvmf_set_config, set_nvmf_target_config)

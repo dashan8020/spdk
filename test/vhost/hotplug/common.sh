@@ -215,9 +215,9 @@ function get_traddr() {
 }
 
 function delete_nvme() {
-    $rpc_py delete_nvme_controller $1
+    $rpc_py bdev_nvme_detach_controller $1
 }
 
 function add_nvme() {
-    $rpc_py construct_nvme_bdev -b $1 -t PCIe -a $2
+    $rpc_py bdev_nvme_attach_controller -b $1 -t PCIe -a $2
 }

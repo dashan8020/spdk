@@ -43,6 +43,7 @@
 
 DEFINE_STUB_V(nvme_ctrlr_proc_get_ref, (struct spdk_nvme_ctrlr *ctrlr));
 DEFINE_STUB_V(nvme_ctrlr_proc_put_ref, (struct spdk_nvme_ctrlr *ctrlr));
+DEFINE_STUB_V(nvme_ctrlr_fail, (struct spdk_nvme_ctrlr *ctrlr, bool hotremove));
 DEFINE_STUB(spdk_nvme_transport_available, bool,
 	    (enum spdk_nvme_transport_type trtype), true);
 /* return anything non-NULL, this won't be deferenced anywhere in this test */
@@ -59,6 +60,8 @@ DEFINE_STUB(nvme_transport_ctrlr_construct, struct spdk_nvme_ctrlr *,
 	    (const struct spdk_nvme_transport_id *trid,
 	     const struct spdk_nvme_ctrlr_opts *opts,
 	     void *devhandle), NULL);
+DEFINE_STUB_V(nvme_io_msg_ctrlr_stop, (struct spdk_nvme_ctrlr *ctrlr,
+				       struct nvme_io_msg_producer *io_msg_producer, bool shutdown));
 
 static bool ut_destruct_called = false;
 void
@@ -721,11 +724,14 @@ test_nvme_ctrlr_probe(void)
 {
 	int rc = 0;
 	struct spdk_nvme_ctrlr ctrlr = {};
+	struct spdk_nvme_qpair qpair = {};
 	const struct spdk_nvme_transport_id trid = {};
 	struct spdk_nvme_probe_ctx probe_ctx = {};
 	void *devhandle = NULL;
 	void *cb_ctx = NULL;
 	struct spdk_nvme_ctrlr *dummy = NULL;
+
+	ctrlr.adminq = &qpair;
 
 	TAILQ_INIT(&probe_ctx.init_ctrlrs);
 	nvme_driver_init();

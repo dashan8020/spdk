@@ -689,7 +689,7 @@ iscsi_tgt_node_destruct(struct spdk_iscsi_tgt_node *target,
 	target->destruct_cb_fn = cb_fn;
 	target->destruct_cb_arg = cb_arg;
 
-	spdk_iscsi_conns_start_exit(target);
+	spdk_iscsi_conns_request_logout(target);
 
 	if (spdk_iscsi_get_active_conns(target) != 0) {
 		target->destruct_poller = spdk_poller_register(iscsi_tgt_node_check_active_conns,
@@ -787,8 +787,8 @@ failed:
 }
 
 int
-spdk_iscsi_tgt_node_add_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
-				   int *pg_tag_list, int *ig_tag_list, uint16_t num_maps)
+spdk_iscsi_target_node_add_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
+				      int *pg_tag_list, int *ig_tag_list, uint16_t num_maps)
 {
 	uint16_t i;
 	int rc;
@@ -815,8 +815,8 @@ invalid:
 }
 
 int
-spdk_iscsi_tgt_node_delete_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
-				      int *pg_tag_list, int *ig_tag_list, uint16_t num_maps)
+spdk_iscsi_target_node_remove_pg_ig_maps(struct spdk_iscsi_tgt_node *target,
+		int *pg_tag_list, int *ig_tag_list, uint16_t num_maps)
 {
 	uint16_t i;
 	int rc;
@@ -993,7 +993,8 @@ spdk_iscsi_tgt_node_construct(int target_index,
 	}
 
 	TAILQ_INIT(&target->pg_map_head);
-	rc = spdk_iscsi_tgt_node_add_pg_ig_maps(target, pg_tag_list, ig_tag_list, num_maps);
+	rc = spdk_iscsi_target_node_add_pg_ig_maps(target, pg_tag_list,
+			ig_tag_list, num_maps);
 	if (rc != 0) {
 		SPDK_ERRLOG("could not add map to target\n");
 		iscsi_tgt_node_destruct(target, NULL, NULL);
@@ -1580,7 +1581,7 @@ iscsi_tgt_node_config_json(struct spdk_iscsi_tgt_node *target,
 {
 	spdk_json_write_object_begin(w);
 
-	spdk_json_write_named_string(w, "method", "construct_target_node");
+	spdk_json_write_named_string(w, "method", "iscsi_create_target_node");
 
 	spdk_json_write_name(w, "params");
 	iscsi_tgt_node_info_json(target, w);

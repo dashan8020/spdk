@@ -1,40 +1,91 @@
 # Changelog
 
-## v19.10: (Upcoming Release)
+## v20.01: (Upcoming Release)
 
-### nvmf
+### isa-l
 
-The `spdk_nvmf_tgt_create` function now accepts an object of type `spdk_nvmf_target_opts`
-as its only parameter. This new structure contains the max_subsystems parameter previously
-passed into that function.
+Updated ISA-L submodule to commit f3993f5c0b6911 which includes implementation and
+optimization for aarch64.
 
-A new public API function `spdk_nvmf_get_tgt` has been added which allows users to
-retrieve a pointer to an `spdk_nvmf_tgt` object by supplying its name. In the special
-case where an RPC or application only creates a single target, this function can accept
-a null name parameter and will return the only available target.
+## v19.10:
 
-The majority of the NVMe-oF RPCs now accept an optional tgt_name parameter. This will
-allow those RPCs to work with applications that create more than one target.
+### rpc
+
+Many of SPDK's RPCs were renamed to be more consistent and intuitive in this release.
+The old names will continue to function, but will display a deprecation warning.
+
+Added optional parameters '--arbitration-burst' and '--low/medium/high-priority-weight' to
+'bdev_nvme_set_options' RPC method.
+
+Added optional parameter '--md-size' to 'construct_null_bdev' RPC method.
+
+Added optional parameters '--dif-type' and '--dif-is-head-of-md' to 'construct_null_bdev'
+RPC method.
+
+Added `blobfs_detect` RPC method to detect whether a blobfs exists on given bdev.
+
+Added `blobfs_create` RPC method to build blobfs on given bdev.
+
+Added `blobfs_mount` RPC method to mount blobfs on given bdev to a host path by FUSE.
+Then on the host path, user can directly do some file operations which will be mapped
+to blobfs.
 
 ### bdev
 
-A new spdk_bdev_open_ext function has been added and spdk_bdev_open function has been deprecated.
+Added new parameter `cdw0` to `spdk_bdev_io_complete_nvme_status()` and
+`spdk_bdev_io_get_nvme_status()` that allows setting/getting
+the NVMe completion queue DW0 entry. This allows vendor specific IO commands
+to return commmand specific completion info back to the initiator.
+
+Added `spdk_bdev_get_write_unit_size()` function for retrieving required number
+of logical blocks for write operation.
+
+New zone-related fields were added to the result of the `get_bdevs` RPC call:
+ - `zoned`: indicates whether the device is zoned or a regular
+   block device
+ - `zone_size`: number of blocks in a single zone
+ - `max_open_zones`: maximum number of open zones
+ - `optimal_open_zones`: optimal number of open zones
+The `zoned` field is a boolean and is always present, while the rest is only available for zoned
+bdevs.
+
+A new `spdk_bdev_open_ext` function has been added and `spdk_bdev_open` function has been deprecated.
 The new open function introduces requirement to provide callback function that will be called by
-asynchronous event such as bdev removal. spdk_bdev_open_ext function takes bdev name as
+asynchronous event such as bdev removal. `spdk_bdev_open_ext` function takes bdev name as
 an argument instead of bdev structure to avoid a race condition that can happen when the bdev
 is being removed between a call to get its structure based on a name and actually openning it.
 
-### nvme
+New 'resize' event has been added to notify about change of block count property of block device.
+Event is delivered only if block device was opened with `spdk_bdev_open_ext` function.
 
-Added `no_shn_notification` to NVMe controller initialization options, users can enable
-it for NVMe controllers.  When the option is enabled, the controller will not do the
-shutdown process and just disable the controller, users can start their application
-later again to initialize the controller to the ready state.
+### bdev zone
 
-### iSCSI
+Added new public header for zoned bdev. Zoned bdev is an extension
+of the bdev interface.
 
-Portals may no longer be associated with a cpumask. The scheduling of
-connections is moving to a more dynamic model.
+`spdk_bdev_get_zone_size()`, `spdk_bdev_get_max_open_zones()`, `spdk_bdev_get_optimal_open_zones()`
+APIs were added for retrieving zoned device information.
+`spdk_bdev_get_zone_info()` API was added for retrieving information about zones in zoned
+device.
+Added `spdk_bdev_zone_management()` API for changing zone state.
+`spdk_bdev_zone_append()` and `spdk_bdev_zone_append_with_md()` APIs were added for
+appending data to a zone.
+Added `spdk_bdev_io_get_append location()` function for retrieving append location for I/O.
+Added `spdk_bdev_is_zoned()` function for checking if bdev supports zoned namespace semantics.
+
+### bdev opal
+
+EXPERIMENTAL: A new opal bdev has been added to support management of
+NVMe self-encrypting drives through the Opal specification. Users can
+create opal bdevs from an NVMe namespace bdev, if the controller
+containing that namespace supports Opal. Currently this is only
+supported for namespace ID=1. The following RPCs have been added to
+support Opal: `bdev_nvme_opal_init`, `bdev_nvme_opal_revert`,
+`bdev_opal_create`, `bdev_opal_delete`, `bdev_opal_get_info`,
+`bdev_opal_new_user`, `bdev_opal_set_lock_state`.
+It does not yet support recreating the opal bdevs after application restart.
+This bdev module should be considered very experimental, and the RPCs may
+change significantly in future releases.
 
 ### delay bdev
 
@@ -53,17 +104,136 @@ Metadata support has been added to Null bdev module.
 
 Protection information support has been added to Null bdev module.
 
+### nvme
+
+Added `no_shn_notification` to NVMe controller initialization options, users can enable
+it for NVMe controllers.  When the option is enabled, the controller will not do the
+shutdown process and just disable the controller, users can start their application
+later again to initialize the controller to the ready state.
+
+A controller flag `SPDK_NVME_CTRLR_WRR_SUPPORTED` was added to indicate the controller
+can support weighted round robin arbitration feature with submission queue.
+
+Added `arbitration_burst` option for arbitration feature, and added three
+`low/medium/high_priority_weight` options for weighted round robin arbitration.
+
+Added `spdk_nvme_ns_cmd_write_uncorrectable`.
+
+Added new error handling and reporting functionality. This includes several
+new API functions to facilitate applications recovering when a qpair or
+controller fails.
+
+`spdk_nvme_ctrlr_reconnect_io_qpair` - Reconnects a failed I/O qpair.
+`spdk_nvme_ctrlr_set_trid` - Sets the trid of an existing controller. Can be used to
+change the trid for failover cases.
+`spdk_nvme_ctrlr_is_failed` - Returns the failed state of a controller.
+`spdk_nvme_ctrlr_fail` - Forces a controller into a failed state.
+
+Modified the return behavior of several API functions to better indicate to
+applications when a qpair is failed. This list of functions includes:
+
+`spdk_nvme_qpair_process_completions`
+`spdk_nvme_ns_cmd_*`
+`spdk_nvme_ctrlr_process_admin_completions`
+`spdk_nvme_ctrlr_cmd_*`
+
+These functions now return -ENXIO when the qpair or controller on which they
+operate is failed.
+
+EXPERIMENTAL: Added NVMe character device support to allow to create NVMe device nodes in Linux
+kernel for controller as well as for namespace and process ioctl requests as usual
+from linux environment.
+
+### nvmf
+
+The `spdk_nvmf_tgt_create` function now accepts an object of type `spdk_nvmf_target_opts`
+as its only parameter. This new structure contains the max_subsystems parameter previously
+passed into that function.
+
+A new public API function `spdk_nvmf_get_tgt` has been added which allows users to
+retrieve a pointer to an `spdk_nvmf_tgt` object by supplying its name. In the special
+case where an RPC or application only creates a single target, this function can accept
+a null name parameter and will return the only available target.
+
+The majority of the NVMe-oF RPCs now accept an optional tgt_name parameter. This will
+allow those RPCs to work with applications that create more than one target.
+
+Three new NVMe-oF RPCs have been added `nvmf_create_target`, `nvmf_delete_target`, and
+`nvmf_get_targets`. These new RPCs provide a basic interface for managing multiple target
+objects. In SPDK the target object defines a unique discovery service. As of this release,
+these RPCs are not intended to be used with the in-tree SPDK target applications, spdk_tgt and
+nvmf_tgt, which use a single, global target structure. As such, they are not included in scripts/rpc.py
+
+Three new header functions have also been added to help deal with multiple targets.
+`spdk_nvmf_tgt_get_name` takes a target pointer as an argument and returns its human readable name.
+`spdk_nvmf_get_first_target` takes no arguments and returns the first target in the global list.
+`spdk_nvmf_get_next_tgt` takes a target pointer as an argument and returns the next one in the global list.
+
+The `spdk_nvmf_tgt_accept` takes additional argument allowing to pass arbitrary context
+information to the `new_qpair` callback. This will simplify the code when having multiple
+nvmf targets or when retrieving the context information from globals is not suitable.
+
+### blobstore
+
+A new `spdk_bdev_create_bs_dev_from_desc` function has been added and `spdk_bdev_create_bs_dev`
+function has been deprecated.
+The new create function can cowork with `spdk_bdev_open_ext` function, which provides callback
+function that will be called by asynchronous event such as bdev removal.
+
+### blobfs_bdev
+
+A new blobfs module `bdev` has been added to simplify the operations of blobfs on bdev.
+
+Function `spdk_blobfs_bdev_detect` is added to detect whether blobfs exists on the given block device.
+
+Function `spdk_blobfs_bdev_create` is added to create a blobfs on the given block device.
+
+Function `spdk_blobfs_bdev_mount` is added to mount a blobfs on the given block device to
+a host path by FUSE. Then, a new thread is created dedicatedly for one mountpoint to handle
+FUSE request by blobfs API.
+
+### build
+
+Option to build FUSE components into blobfs_bdev module for mounting a blobfs filesystem.
+It requires the installation of libfuse3. By default, it is disabled. And it will be
+enabled if run `./configure` with `--with-fuse` option.
+
+### iSCSI
+
+Portals may no longer be associated with a cpumask. The scheduling of
+connections is moving to a more dynamic model.
+
+An new RPC `iscsi_portal_group_set_auth` has been added to set CHAP authentication
+for discovery sessions specific for the existing iSCSI portal group. This RPC overwrites
+the setting by the global parameters for the iSCSI portal group.
+
+### socket
+
+Added `spdk_sock_is_connected` to check whether the socket is currently connected.
+`spdk_sock_group_poll` now returns number of events on success.
+
+### env
+
+Added `spdk_pci_device_unclaim()` function to cleanup pci claim file.
+
 ### event
 
-start_subsystem_init RPC no longer stops the application on error during
+`framework_start_init` RPC no longer stops the application on error during
 initialization.
 
-### rpc
+### DPDK
 
-Added optional parameter '--md-size'to 'construct_null_bdev' RPC method.
+Updated DPDK submodule to DPDK 19.08.
 
-Added optional parameters '--dif-type' and '--dif-is-head-of-md' to 'construct_null_bdev'
-RPC method.
+### ocf
+
+Updated OCF submodule to OCF v19.06
+
+Along with update, new cache mode 'write only' was added.
+
+New cache modes added to use via RPC, wi - write invalidate and wa - write around.
+
+New version of OCF provides fully asynchronous management API.
 
 ## v19.07:
 

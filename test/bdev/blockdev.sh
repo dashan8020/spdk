@@ -42,7 +42,7 @@ function nbd_function_test() {
 		nbd_rpc_start_stop_verify $rpc_server "${bdev_list[*]}"
 		nbd_rpc_data_verify $rpc_server "${bdev_list[*]}" "${nbd_list[*]}"
 
-		$rpc_py -s $rpc_server delete_passthru_bdev TestPT
+		$rpc_py -s $rpc_server bdev_passthru_delete TestPT
 
 		killprocess $nbd_pid
 		trap - SIGINT SIGTERM EXIT
@@ -124,14 +124,14 @@ if [ -d /usr/src/fio ]; then
 
 	timing_enter fio_rw_verify
 	# Generate the fio config file given the list of all unclaimed bdevs
-	fio_config_gen $testdir/bdev.fio verify
+	fio_config_gen $testdir/bdev.fio verify AIO
 	for b in $(echo $bdevs | jq -r '.name'); do
 		fio_config_add_job $testdir/bdev.fio $b
 	done
 
-	run_fio --spdk_conf=./test/bdev/bdev.conf --spdk_mem=$PRE_RESERVED_MEM
+	run_fio --spdk_conf=./test/bdev/bdev.conf --spdk_mem=$PRE_RESERVED_MEM --output=$output_dir/blockdev_fio_verify.txt
 
-	rm -f *.state
+	rm -f ./*.state
 	rm -f $testdir/bdev.fio
 	timing_exit fio_rw_verify
 
@@ -142,9 +142,9 @@ if [ -d /usr/src/fio ]; then
 		fio_config_add_job $testdir/bdev.fio $b
 	done
 
-	run_fio --spdk_conf=./test/bdev/bdev.conf
+	run_fio --spdk_conf=./test/bdev/bdev.conf --output=$output_dir/blockdev_trim.txt
 
-	rm -f *.state
+	rm -f ./*.state
 	rm -f $testdir/bdev.fio
 	timing_exit fio_trim
 	report_test_completion "bdev_fio"

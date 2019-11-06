@@ -44,23 +44,23 @@
 SPDK_LOG_REGISTER_COMPONENT("raidrpc", SPDK_LOG_RAID_RPC)
 
 /*
- * Input structure for get_raid_bdevs RPC
+ * Input structure for bdev_raid_get_bdevs RPC
  */
-struct rpc_get_raid_bdevs {
+struct rpc_bdev_raid_get_bdevs {
 	/* category - all or online or configuring or offline */
 	char *category;
 };
 
 /*
  * brief:
- * free_rpc_get_raids function frees RPC get_raids related parameters
+ * free_rpc_bdev_raid_get_bdevs function frees RPC bdev_raid_get_bdevs related parameters
  * params:
  * req - pointer to RPC request
  * returns:
  * none
  */
 static void
-free_rpc_get_raid_bdevs(struct rpc_get_raid_bdevs *req)
+free_rpc_bdev_raid_get_bdevs(struct rpc_bdev_raid_get_bdevs *req)
 {
 	free(req->category);
 }
@@ -68,13 +68,13 @@ free_rpc_get_raid_bdevs(struct rpc_get_raid_bdevs *req)
 /*
  * Decoder object for RPC get_raids
  */
-static const struct spdk_json_object_decoder rpc_get_raid_bdevs_decoders[] = {
-	{"category", offsetof(struct rpc_get_raid_bdevs, category), spdk_json_decode_string},
+static const struct spdk_json_object_decoder rpc_bdev_raid_get_bdevs_decoders[] = {
+	{"category", offsetof(struct rpc_bdev_raid_get_bdevs, category), spdk_json_decode_string},
 };
 
 /*
  * brief:
- * spdk_rpc_get_raids function is the RPC for get_raids. This is used to list
+ * spdk_rpc_bdev_raid_get_bdevs function is the RPC for spdk_rpc_bdev_raid_get_bdevs. This is used to list
  * all the raid bdev names based on the input category requested. Category should be
  * one of "all", "online", "configuring" or "offline". "all" means all the raids
  * whether they are online or configuring or offline. "online" is the raid bdev which
@@ -89,15 +89,15 @@ static const struct spdk_json_object_decoder rpc_get_raid_bdevs_decoders[] = {
  * none
  */
 static void
-spdk_rpc_get_raid_bdevs(struct spdk_jsonrpc_request *request,
-			const struct spdk_json_val *params)
+spdk_rpc_bdev_raid_get_bdevs(struct spdk_jsonrpc_request *request,
+			     const struct spdk_json_val *params)
 {
-	struct rpc_get_raid_bdevs   req = {};
+	struct rpc_bdev_raid_get_bdevs   req = {};
 	struct spdk_json_write_ctx  *w;
 	struct raid_bdev            *raid_bdev;
 
-	if (spdk_json_decode_object(params, rpc_get_raid_bdevs_decoders,
-				    SPDK_COUNTOF(rpc_get_raid_bdevs_decoders),
+	if (spdk_json_decode_object(params, rpc_bdev_raid_get_bdevs_decoders,
+				    SPDK_COUNTOF(rpc_bdev_raid_get_bdevs_decoders),
 				    &req)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 "spdk_json_decode_object failed");
@@ -137,14 +137,15 @@ spdk_rpc_get_raid_bdevs(struct spdk_jsonrpc_request *request,
 	spdk_jsonrpc_end_result(request, w);
 
 cleanup:
-	free_rpc_get_raid_bdevs(&req);
+	free_rpc_bdev_raid_get_bdevs(&req);
 }
-SPDK_RPC_REGISTER("get_raid_bdevs", spdk_rpc_get_raid_bdevs, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_raid_get_bdevs", spdk_rpc_bdev_raid_get_bdevs, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(bdev_raid_get_bdevs, get_raid_bdevs)
 
 /*
- * Base bdevs in RPC construct_raid
+ * Base bdevs in RPC bdev_raid_create
  */
-struct rpc_construct_raid_base_bdevs {
+struct rpc_bdev_raid_create_base_bdevs {
 	/* Number of base bdevs */
 	size_t           num_base_bdevs;
 
@@ -153,9 +154,9 @@ struct rpc_construct_raid_base_bdevs {
 };
 
 /*
- * Input structure for RPC construct_raid
+ * Input structure for RPC rpc_bdev_raid_create
  */
-struct rpc_construct_raid_bdev {
+struct rpc_bdev_raid_create {
 	/* Raid bdev name */
 	char                                 *name;
 
@@ -164,22 +165,22 @@ struct rpc_construct_raid_bdev {
 	uint32_t                             strip_size_kb;
 
 	/* RAID raid level */
-	uint8_t                              raid_level;
+	enum raid_level                      level;
 
 	/* Base bdevs information */
-	struct rpc_construct_raid_base_bdevs base_bdevs;
+	struct rpc_bdev_raid_create_base_bdevs base_bdevs;
 };
 
 /*
  * brief:
- * free_rpc_construct_raid_bdev function is to free RPC construct_raid_bdev related parameters
+ * free_rpc_bdev_raid_create function is to free RPC bdev_raid_create related parameters
  * params:
  * req - pointer to RPC request
  * returns:
  * none
  */
 static void
-free_rpc_construct_raid_bdev(struct rpc_construct_raid_bdev *req)
+free_rpc_bdev_raid_create(struct rpc_bdev_raid_create *req)
 {
 	free(req->name);
 	for (size_t i = 0; i < req->base_bdevs.num_base_bdevs; i++) {
@@ -188,31 +189,55 @@ free_rpc_construct_raid_bdev(struct rpc_construct_raid_bdev *req)
 }
 
 /*
- * Decoder function for RPC construct_raid_bdev to decode base bdevs list
+ * Decoder function for RPC bdev_raid_create to decode raid level
+ */
+static int
+decode_raid_level(const struct spdk_json_val *val, void *out)
+{
+	int ret;
+	char *str = NULL;
+	enum raid_level level;
+
+	ret = spdk_json_decode_string(val, &str);
+	if (ret == 0) {
+		level = raid_bdev_parse_raid_level(str);
+		if (level == INVALID_RAID_LEVEL) {
+			ret = -EINVAL;
+		} else {
+			*(enum raid_level *)out = level;
+		}
+	}
+
+	free(str);
+	return ret;
+}
+
+/*
+ * Decoder function for RPC bdev_raid_create to decode base bdevs list
  */
 static int
 decode_base_bdevs(const struct spdk_json_val *val, void *out)
 {
-	struct rpc_construct_raid_base_bdevs *base_bdevs = out;
+	struct rpc_bdev_raid_create_base_bdevs *base_bdevs = out;
 	return spdk_json_decode_array(val, spdk_json_decode_string, base_bdevs->base_bdevs,
 				      RPC_MAX_BASE_BDEVS, &base_bdevs->num_base_bdevs, sizeof(char *));
 }
 
 /*
- * Decoder object for RPC construct_raid
+ * Decoder object for RPC bdev_raid_create
  */
 /* Note: strip_size is deprecated, one of the two options must be specified but not both. */
-static const struct spdk_json_object_decoder rpc_construct_raid_bdev_decoders[] = {
-	{"name", offsetof(struct rpc_construct_raid_bdev, name), spdk_json_decode_string},
-	{"strip_size", offsetof(struct rpc_construct_raid_bdev, strip_size), spdk_json_decode_uint32, true},
-	{"strip_size_kb", offsetof(struct rpc_construct_raid_bdev, strip_size_kb), spdk_json_decode_uint32, true},
-	{"raid_level", offsetof(struct rpc_construct_raid_bdev, raid_level), spdk_json_decode_uint32},
-	{"base_bdevs", offsetof(struct rpc_construct_raid_bdev, base_bdevs), decode_base_bdevs},
+static const struct spdk_json_object_decoder rpc_bdev_raid_create_decoders[] = {
+	{"name", offsetof(struct rpc_bdev_raid_create, name), spdk_json_decode_string},
+	{"strip_size", offsetof(struct rpc_bdev_raid_create, strip_size), spdk_json_decode_uint32, true},
+	{"strip_size_kb", offsetof(struct rpc_bdev_raid_create, strip_size_kb), spdk_json_decode_uint32, true},
+	{"raid_level", offsetof(struct rpc_bdev_raid_create, level), decode_raid_level},
+	{"base_bdevs", offsetof(struct rpc_bdev_raid_create, base_bdevs), decode_base_bdevs},
 };
 
 /*
  * brief:
- * spdk_rpc_construct_raid_bdev function is the RPC for construct_raids. It takes
+ * spdk_rpc_bdev_raid_create function is the RPC for creating RAID bdevs. It takes
  * input as raid bdev name, raid level, strip size in KB and list of base bdev names.
  * params:
  * requuest - pointer to json rpc request
@@ -221,16 +246,16 @@ static const struct spdk_json_object_decoder rpc_construct_raid_bdev_decoders[] 
  * none
  */
 static void
-spdk_rpc_construct_raid_bdev(struct spdk_jsonrpc_request *request,
-			     const struct spdk_json_val *params)
+spdk_rpc_bdev_raid_create(struct spdk_jsonrpc_request *request,
+			  const struct spdk_json_val *params)
 {
-	struct rpc_construct_raid_bdev	req = {};
+	struct rpc_bdev_raid_create	req = {};
 	struct spdk_json_write_ctx	*w;
 	struct raid_bdev_config		*raid_cfg;
 	int				rc;
 
-	if (spdk_json_decode_object(params, rpc_construct_raid_bdev_decoders,
-				    SPDK_COUNTOF(rpc_construct_raid_bdev_decoders),
+	if (spdk_json_decode_object(params, rpc_bdev_raid_create_decoders,
+				    SPDK_COUNTOF(rpc_bdev_raid_create_decoders),
 				    &req)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 "spdk_json_decode_object failed");
@@ -250,7 +275,7 @@ spdk_rpc_construct_raid_bdev(struct spdk_jsonrpc_request *request,
 	}
 
 	rc = raid_bdev_config_add(req.name, req.strip_size_kb, req.base_bdevs.num_base_bdevs,
-				  req.raid_level,
+				  req.level,
 				  &raid_cfg);
 	if (rc != 0) {
 		spdk_jsonrpc_send_error_response_fmt(request, rc,
@@ -293,41 +318,42 @@ spdk_rpc_construct_raid_bdev(struct spdk_jsonrpc_request *request,
 	spdk_jsonrpc_end_result(request, w);
 
 cleanup:
-	free_rpc_construct_raid_bdev(&req);
+	free_rpc_bdev_raid_create(&req);
 }
-SPDK_RPC_REGISTER("construct_raid_bdev", spdk_rpc_construct_raid_bdev, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_raid_create", spdk_rpc_bdev_raid_create, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(bdev_raid_create, construct_raid_bdev)
 
 /*
- * Input structure for RPC destroy_raid
+ * Input structure for RPC deleting a raid bdev
  */
-struct rpc_destroy_raid_bdev {
+struct rpc_bdev_raid_delete {
 	/* raid bdev name */
 	char *name;
 };
 
 /*
  * brief:
- * free_rpc_destroy_raid_bdev function is used to free RPC destroy_raid_bdev related parameters
+ * free_rpc_bdev_raid_delete function is used to free RPC bdev_raid_delete related parameters
  * params:
  * req - pointer to RPC request
  * params:
  * none
  */
 static void
-free_rpc_destroy_raid_bdev(struct rpc_destroy_raid_bdev *req)
+free_rpc_bdev_raid_delete(struct rpc_bdev_raid_delete *req)
 {
 	free(req->name);
 }
 
 /*
- * Decoder object for RPC destroy_raid
+ * Decoder object for RPC raid_bdev_delete
  */
-static const struct spdk_json_object_decoder rpc_destroy_raid_bdev_decoders[] = {
-	{"name", offsetof(struct rpc_destroy_raid_bdev, name), spdk_json_decode_string},
+static const struct spdk_json_object_decoder rpc_bdev_raid_delete_decoders[] = {
+	{"name", offsetof(struct rpc_bdev_raid_delete, name), spdk_json_decode_string},
 };
 
-struct rpc_destroy_raid_bdev_ctx {
-	struct rpc_destroy_raid_bdev req;
+struct rpc_bdev_raid_delete_ctx {
+	struct rpc_bdev_raid_delete req;
 	struct raid_bdev_config *raid_cfg;
 	struct spdk_jsonrpc_request *request;
 };
@@ -336,20 +362,20 @@ struct rpc_destroy_raid_bdev_ctx {
  * brief:
  * params:
  * cb_arg - pointer to the callback context.
- * rc - return code of the destruction of the raid bdev.
+ * rc - return code of the deletion of the raid bdev.
  * returns:
  * none
  */
 static void
-destroy_raid_bdev_done(void *cb_arg, int rc)
+bdev_raid_delete_done(void *cb_arg, int rc)
 {
-	struct rpc_destroy_raid_bdev_ctx *ctx = cb_arg;
+	struct rpc_bdev_raid_delete_ctx *ctx = cb_arg;
 	struct raid_bdev_config *raid_cfg;
 	struct spdk_jsonrpc_request *request = ctx->request;
 	struct spdk_json_write_ctx *w;
 
 	if (rc != 0) {
-		SPDK_ERRLOG("Failed to destroy raid bdev %s (%d): %s\n",
+		SPDK_ERRLOG("Failed to delete raid bdev %s (%d): %s\n",
 			    ctx->req.name, rc, spdk_strerror(-rc));
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 spdk_strerror(-rc));
@@ -365,14 +391,14 @@ destroy_raid_bdev_done(void *cb_arg, int rc)
 	spdk_json_write_bool(w, true);
 	spdk_jsonrpc_end_result(request, w);
 exit:
-	free_rpc_destroy_raid_bdev(&ctx->req);
+	free_rpc_bdev_raid_delete(&ctx->req);
 	free(ctx);
 }
 
 /*
  * brief:
- * spdk_rpc_destroy_raid_bdev function is the RPC for destroy_raid. It takes raid
- * name as input and destroy that raid bdev including freeing the base bdev
+ * spdk_rpc_bdev_raid_delete function is the RPC for deleting a raid bdev. It takes raid
+ * name as input and delete that raid bdev including freeing the base bdev
  * resources.
  * params:
  * requuest - pointer to json rpc request
@@ -381,10 +407,10 @@ exit:
  * none
  */
 static void
-spdk_rpc_destroy_raid_bdev(struct spdk_jsonrpc_request *request,
-			   const struct spdk_json_val *params)
+spdk_rpc_bdev_raid_delete(struct spdk_jsonrpc_request *request,
+			  const struct spdk_json_val *params)
 {
-	struct rpc_destroy_raid_bdev_ctx *ctx;
+	struct rpc_bdev_raid_delete_ctx *ctx;
 
 	ctx = calloc(1, sizeof(*ctx));
 	if (!ctx) {
@@ -392,8 +418,8 @@ spdk_rpc_destroy_raid_bdev(struct spdk_jsonrpc_request *request,
 		return;
 	}
 
-	if (spdk_json_decode_object(params, rpc_destroy_raid_bdev_decoders,
-				    SPDK_COUNTOF(rpc_destroy_raid_bdev_decoders),
+	if (spdk_json_decode_object(params, rpc_bdev_raid_delete_decoders,
+				    SPDK_COUNTOF(rpc_bdev_raid_delete_decoders),
 				    &ctx->req)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 "spdk_json_decode_object failed");
@@ -410,13 +436,14 @@ spdk_rpc_destroy_raid_bdev(struct spdk_jsonrpc_request *request,
 
 	ctx->request = request;
 
-	/* Remove all the base bdevs from this raid bdev before destroying the raid bdev */
-	raid_bdev_remove_base_devices(ctx->raid_cfg, destroy_raid_bdev_done, ctx);
+	/* Remove all the base bdevs from this raid bdev before deleting the raid bdev */
+	raid_bdev_remove_base_devices(ctx->raid_cfg, bdev_raid_delete_done, ctx);
 
 	return;
 
 cleanup:
-	free_rpc_destroy_raid_bdev(&ctx->req);
+	free_rpc_bdev_raid_delete(&ctx->req);
 	free(ctx);
 }
-SPDK_RPC_REGISTER("destroy_raid_bdev", spdk_rpc_destroy_raid_bdev, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_raid_delete", spdk_rpc_bdev_raid_delete, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(bdev_raid_delete, destroy_raid_bdev)

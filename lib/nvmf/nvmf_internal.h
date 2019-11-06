@@ -47,6 +47,9 @@
 
 #define SPDK_NVMF_MAX_SGL_ENTRIES	16
 
+/* The maximum number of buffers per request */
+#define NVMF_REQ_MAX_BUFFERS	(SPDK_NVMF_MAX_SGL_ENTRIES * 2)
+
 /* AIO backend requires block size aligned data buffers,
  * extra 4KiB aligned data buffer should work for most devices.
  */
@@ -83,8 +86,6 @@ struct spdk_nvmf_tgt {
 	/* Array of subsystem pointers of size max_subsystems indexed by sid */
 	struct spdk_nvmf_subsystem		**subsystems;
 
-	struct spdk_nvmf_discovery_log_page	*discovery_log_page;
-	size_t					discovery_log_page_size;
 	TAILQ_HEAD(, spdk_nvmf_transport)	transports;
 
 	spdk_nvmf_tgt_destroy_done_fn		*destroy_cb_fn;
@@ -110,6 +111,8 @@ struct spdk_nvmf_transport_pg_cache_buf {
 
 struct spdk_nvmf_transport_poll_group {
 	struct spdk_nvmf_transport					*transport;
+	/* Requests that are waiting to obtain a data buffer */
+	STAILQ_HEAD(, spdk_nvmf_request)				pending_buf_queue;
 	STAILQ_HEAD(, spdk_nvmf_transport_pg_cache_buf)			buf_cache;
 	uint32_t							buf_cache_count;
 	uint32_t							buf_cache_size;
@@ -146,6 +149,7 @@ struct spdk_nvmf_subsystem_pg_ns_info {
 	struct spdk_uuid		holder_id;
 	/* Host ID for the registrants with the namespace */
 	struct spdk_uuid		reg_hostid[SPDK_NVMF_MAX_NUM_REGISTRANTS];
+	uint64_t			num_blocks;
 };
 
 typedef void(*spdk_nvmf_poll_group_mod_done)(void *cb_arg, int status);
@@ -202,6 +206,13 @@ union nvmf_c2h_msg {
 };
 SPDK_STATIC_ASSERT(sizeof(union nvmf_c2h_msg) == 16, "Incorrect size");
 
+struct spdk_nvmf_dif_info {
+	struct spdk_dif_ctx			dif_ctx;
+	bool					dif_insert_or_strip;
+	uint32_t				elba_length;
+	uint32_t				orig_length;
+};
+
 struct spdk_nvmf_request {
 	struct spdk_nvmf_qpair		*qpair;
 	uint32_t			length;
@@ -209,10 +220,14 @@ struct spdk_nvmf_request {
 	void				*data;
 	union nvmf_h2c_msg		*cmd;
 	union nvmf_c2h_msg		*rsp;
-	struct iovec			iov[SPDK_NVMF_MAX_SGL_ENTRIES * 2];
+	void				*buffers[NVMF_REQ_MAX_BUFFERS];
+	struct iovec			iov[NVMF_REQ_MAX_BUFFERS];
 	uint32_t			iovcnt;
+	bool				data_from_pool;
 	struct spdk_bdev_io_wait_entry	bdev_io_wait;
+	struct spdk_nvmf_dif_info	dif;
 
+	STAILQ_ENTRY(spdk_nvmf_request)	buf_link;
 	TAILQ_ENTRY(spdk_nvmf_request)	link;
 };
 
@@ -335,6 +350,7 @@ struct spdk_nvmf_subsystem {
 	enum spdk_nvmf_subtype subtype;
 	uint16_t next_cntlid;
 	bool allow_any_host;
+	bool allow_any_listener ;
 
 	struct spdk_nvmf_tgt			*tgt;
 
@@ -376,6 +392,18 @@ void spdk_nvmf_poll_group_resume_subsystem(struct spdk_nvmf_poll_group *group,
 void spdk_nvmf_request_exec(struct spdk_nvmf_request *req);
 int spdk_nvmf_request_free(struct spdk_nvmf_request *req);
 int spdk_nvmf_request_complete(struct spdk_nvmf_request *req);
+
+void spdk_nvmf_request_free_buffers(struct spdk_nvmf_request *req,
+				    struct spdk_nvmf_transport_poll_group *group,
+				    struct spdk_nvmf_transport *transport);
+int spdk_nvmf_request_get_buffers(struct spdk_nvmf_request *req,
+				  struct spdk_nvmf_transport_poll_group *group,
+				  struct spdk_nvmf_transport *transport,
+				  uint32_t length);
+int spdk_nvmf_request_get_buffers_multi(struct spdk_nvmf_request *req,
+					struct spdk_nvmf_transport_poll_group *group,
+					struct spdk_nvmf_transport *transport,
+					uint32_t *lengths, uint32_t num_lengths);
 
 bool spdk_nvmf_request_get_dif_ctx(struct spdk_nvmf_request *req, struct spdk_dif_ctx *dif_ctx);
 

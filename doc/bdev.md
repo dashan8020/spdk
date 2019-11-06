@@ -37,10 +37,10 @@ command parameter.
 
 # General Purpose RPCs {#bdev_ug_general_rpcs}
 
-## get_bdevs {#bdev_ug_get_bdevs}
+## bdev_get_bdevs {#bdev_ug_get_bdevs}
 
 List of currently available block devices including detailed information about
-them can be get by using `get_bdevs` RPC command. User can add optional
+them can be get by using `bdev_get_bdevs` RPC command. User can add optional
 parameter `name` to get details about specified by that name bdev.
 
 Example response
@@ -70,9 +70,9 @@ Example response
 }
 ~~~
 
-## set_bdev_qos_limit {#set_bdev_qos_limit}
+## bdev_set_qos_limit {#bdev_set_qos_limit}
 
-Users can use the `set_bdev_qos_limit` RPC command to enable, adjust, and disable
+Users can use the `bdev_set_qos_limit` RPC command to enable, adjust, and disable
 rate limits on an existing bdev.  Two types of rate limits are supported:
 IOPS and bandwidth.  The rate limits can be enabled, adjusted, and disabled at any
 time for the specified bdev.  The bdev name is a required parameter for this
@@ -83,22 +83,22 @@ limit. Users can run this command with `-h` or `--help` for more information.
 
 ## Histograms {#rpc_bdev_histogram}
 
-The `enable_bdev_histogram` RPC command allows to enable or disable gathering
+The `bdev_enable_histogram` RPC command allows to enable or disable gathering
 latency data for specified bdev. Histogram can be downloaded by the user by
-calling `get_bdev_histogram` and parsed using scripts/histogram.py script.
+calling `bdev_get_histogram` and parsed using scripts/histogram.py script.
 
 Example command
 
-`rpc.py enable_bdev_histogram Nvme0n1 --enable`
+`rpc.py bdev_enable_histogram Nvme0n1 --enable`
 
 The command will enable gathering data for histogram on Nvme0n1 device.
 
-`rpc.py get_bdev_histogram Nvme0n1 | histogram.py`
+`rpc.py bdev_get_histogram Nvme0n1 | histogram.py`
 
 The command will download gathered histogram data. The script will parse
 the data and show table containing IO count for latency ranges.
 
-`rpc.py enable_bdev_histogram Nvme0n1 --disable`
+`rpc.py bdev_enable_histogram Nvme0n1 --disable`
 
 The command will disable histogram on Nvme0n1 device.
 
@@ -107,17 +107,17 @@ The command will disable histogram on Nvme0n1 device.
 The SPDK RBD bdev driver provides SPDK block layer access to Ceph RADOS block
 devices (RBD). Ceph RBD devices are accessed via librbd and librados libraries
 to access the RADOS block device exported by Ceph. To create Ceph bdev RPC
-command `construct_rbd_bdev` should be used.
+command `bdev_rbd_create` should be used.
 
 Example command
 
-`rpc.py construct_rbd_bdev rbd foo 512`
+`rpc.py bdev_rbd_create rbd foo 512`
 
 This command will create a bdev that represents the 'foo' image from a pool called 'rbd'.
 
-To remove a block device representation use the delete_rbd_bdev command.
+To remove a block device representation use the bdev_rbd_delete command.
 
-`rpc.py delete_rbd_bdev Rbd0`
+`rpc.py bdev_rbd_delete Rbd0`
 
 # Compression Virtual Bdev Module {#bdev_config_compress}
 
@@ -258,31 +258,31 @@ The SPDK partition type GUID is `7c5222bd-8f5d-4087-9c00-bf9843c7b58c`. Existing
 can be exposed as Linux block devices via NBD and then ca be partitioned with
 standard partitioning tools. After partitioning, the bdevs will need to be deleted and
 attached again for the GPT bdev module to see any changes. NBD kernel module must be
-loaded first. To create NBD bdev user should use `start_nbd_disk` RPC command.
+loaded first. To create NBD bdev user should use `nbd_start_disk` RPC command.
 
 Example command
 
-`rpc.py start_nbd_disk Malloc0 /dev/nbd0`
+`rpc.py nbd_start_disk Malloc0 /dev/nbd0`
 
 This will expose an SPDK bdev `Malloc0` under the `/dev/nbd0` block device.
 
-To remove NBD device user should use `stop_nbd_disk` RPC command.
+To remove NBD device user should use `nbd_stop_disk` RPC command.
 
 Example command
 
-`rpc.py stop_nbd_disk /dev/nbd0`
+`rpc.py nbd_stop_disk /dev/nbd0`
 
-To display full or specified nbd device list user should use `get_nbd_disks` RPC command.
+To display full or specified nbd device list user should use `nbd_get_disks` RPC command.
 
 Example command
 
-`rpc.py stop_nbd_disk -n /dev/nbd0`
+`rpc.py nbd_stop_disk -n /dev/nbd0`
 
 ## Creating a GPT partition table using NBD {#bdev_ug_gpt_create_part}
 
 ~~~
 # Expose bdev Nvme0n1 as kernel block device /dev/nbd0 by JSON-RPC
-rpc.py start_nbd_disk Nvme0n1 /dev/nbd0
+rpc.py nbd_start_disk Nvme0n1 /dev/nbd0
 
 # Create GPT partition table.
 parted -s /dev/nbd0 mklabel gpt
@@ -295,7 +295,7 @@ parted -s /dev/nbd0 mkpart MyPartition '0%' '50%'
 sgdisk -t 1:7c5222bd-8f5d-4087-9c00-bf9843c7b58c /dev/nbd0
 
 # Stop the NBD device (stop exporting /dev/nbd0).
-rpc.py stop_nbd_disk /dev/nbd0
+rpc.py nbd_stop_disk /dev/nbd0
 
 # Now Nvme0n1 is configured with a GPT partition table, and
 # the first partition will be automatically exposed as
@@ -347,7 +347,7 @@ OCF bdev can be used to enable caching for any underlying bdev.
 
 Below is an example command for creating OCF bdev:
 
-`rpc.py construct_ocf_bdev Cache1 wt Malloc0 Nvme0n1`
+`rpc.py bdev_ocf_create Cache1 wt Malloc0 Nvme0n1`
 
 This command will create new OCF bdev `Cache1` having bdev `Malloc0` as caching-device
 and `Nvme0n1` as core-device and initial cache mode `Write-Through`.
@@ -358,7 +358,7 @@ and non-volatile metadata will be disabled.
 
 To remove `Cache1`:
 
-`rpc.py delete_ocf_bdev Cache1`
+`rpc.py bdev_ocf_delete Cache1`
 
 During removal OCF-cache will be stopped and all cached data will be written to the core device.
 
@@ -393,23 +393,40 @@ To delete a null bdev use the bdev_null_delete command.
 
 There are two ways to create block device based on NVMe device in SPDK. First
 way is to connect local PCIe drive and second one is to connect NVMe-oF device.
-In both cases user should use `construct_nvme_bdev` RPC command to achieve that.
+In both cases user should use `bdev_nvme_attach_controller` RPC command to achieve that.
 
 Example commands
 
-`rpc.py construct_nvme_bdev -b NVMe1 -t PCIe -a 0000:01:00.0`
+`rpc.py bdev_nvme_attach_controller -b NVMe1 -t PCIe -a 0000:01:00.0`
 
 This command will create NVMe bdev of physical device in the system.
 
-`rpc.py construct_nvme_bdev -b Nvme0 -t RDMA -a 192.168.100.1 -f IPv4 -s 4420 -n nqn.2016-06.io.spdk:cnode1`
+`rpc.py bdev_nvme_attach_controller -b Nvme0 -t RDMA -a 192.168.100.1 -f IPv4 -s 4420 -n nqn.2016-06.io.spdk:cnode1`
 
 This command will create NVMe bdev of NVMe-oF resource.
 
-To remove a NVMe controller use the delete_nvme_controller command.
+To remove an NVMe controller use the bdev_nvme_detach_controller command.
 
-`rpc.py delete_nvme_controller Nvme0`
+`rpc.py bdev_nvme_detach_controller Nvme0`
 
-This command will remove NVMe controller named Nvme0.
+This command will remove NVMe bdev named Nvme0.
+
+## NVMe bdev character device {#bdev_config_nvme_cuse}
+
+This feature is considered as experimental.
+
+Example commands
+
+`rpc.py bdev_nvme_cuse_register -n Nvme0 -p spdk/nvme0`
+
+This command will register /dev/spdk/nvme0 character device associated with Nvme0
+controller. If there are namespaces created on Nvme0 controller, for each namespace
+device /dev/spdk/nvme0nX is created.
+
+Cuse devices are removed from system, when NVMe controller is detached or unregistered
+with command:
+
+`rpc.py bdev_nvme_cuse_unregister -n Nvme0`
 
 # Logical volumes {#bdev_ug_logical_volumes}
 
@@ -423,11 +440,11 @@ please refer to @ref lvol.
 Before creating any logical volumes (lvols), an lvol store has to be created first on
 selected block device. Lvol store is lvols vessel responsible for managing underlying
 bdev space assignment to lvol bdevs and storing metadata. To create lvol store user
-should use using `construct_lvol_store` RPC command.
+should use using `bdev_lvol_create_lvstore` RPC command.
 
 Example command
 
-`rpc.py construct_lvol_store Malloc2 lvs -c 4096`
+`rpc.py bdev_lvol_create_lvstore Malloc2 lvs -c 4096`
 
 This will create lvol store named `lvs` with cluster size 4096, build on top of
 `Malloc2` bdev. In response user will be provided with uuid which is unique lvol store
@@ -450,30 +467,30 @@ Example response
 }
 ~~~
 
-To delete lvol store user should use `destroy_lvol_store` RPC command.
+To delete lvol store user should use `bdev_lvol_delete_lvstore` RPC command.
 
 Example commands
 
-`rpc.py destroy_lvol_store -u 330a6ab2-f468-11e7-983e-001e67edf35d`
+`rpc.py bdev_lvol_delete_lvstore -u 330a6ab2-f468-11e7-983e-001e67edf35d`
 
-`rpc.py destroy_lvol_store -l lvs`
+`rpc.py bdev_lvol_delete_lvstore -l lvs`
 
 ## Lvols {#bdev_ug_lvols}
 
-To create lvols on existing lvol store user should use `construct_lvol_bdev` RPC command.
+To create lvols on existing lvol store user should use `bdev_lvol_create` RPC command.
 Each created lvol will be represented by new bdev.
 
 Example commands
 
-`rpc.py construct_lvol_bdev lvol1 25 -l lvs`
+`rpc.py bdev_lvol_create lvol1 25 -l lvs`
 
-`rpc.py construct_lvol_bdev lvol2 25 -u 330a6ab2-f468-11e7-983e-001e67edf35d`
+`rpc.py bdev_lvol_create lvol2 25 -u 330a6ab2-f468-11e7-983e-001e67edf35d`
 
 # RAID {#bdev_ug_raid}
 
 RAID virtual bdev module provides functionality to combine any SPDK bdevs into
 one RAID bdev. Currently SPDK supports only RAID 0. RAID functionality does not
-store on-disk metadata on the member disks, so user must reconstruct the RAID
+store on-disk metadata on the member disks, so user must recreate the RAID
 volume when restarting application. User may specify member disks to create RAID
 volume event if they do not exists yet - as the member disks are registered at
 a later time, the RAID module will claim them and will surface the RAID volume
@@ -483,11 +500,11 @@ each member disk.
 
 Example commands
 
-`rpc.py construct_raid_bdev -n Raid0 -z 64 -r 0 -b "lvol0 lvol1 lvol2 lvol3"`
+`rpc.py bdev_raid_create -n Raid0 -z 64 -r 0 -b "lvol0 lvol1 lvol2 lvol3"`
 
-`rpc.py get_raid_bdevs`
+`rpc.py bdev_raid_get_bdevs`
 
-`rpc.py destroy_raid_bdev Raid0`
+`rpc.py bdev_raid_delete Raid0`
 
 # Passthru {#bdev_config_passthru}
 
@@ -497,9 +514,9 @@ and demonstrates some other basic features such as the use of per I/O context.
 
 Example commands
 
-`rpc.py construct_passthru_bdev -b aio -p pt`
+`rpc.py bdev_passthru_create -b aio -p pt`
 
-`rpc.py delete_passthru_bdev pt`
+`rpc.py bdev_passthru_delete pt`
 
 # Pmem {#bdev_config_pmem}
 
@@ -509,34 +526,34 @@ First, user needs to configure SPDK to include PMDK support:
 
 `configure --with-pmdk`
 
-To create pmemblk pool for use with SPDK user should use `create_pmem_pool` RPC command.
+To create pmemblk pool for use with SPDK user should use `bdev_pmem_create_pool` RPC command.
 
 Example command
 
-`rpc.py create_pmem_pool /path/to/pmem_pool 25 4096`
+`rpc.py bdev_pmem_create_pool /path/to/pmem_pool 25 4096`
 
-To get information on created pmem pool file user can use `pmem_pool_info` RPC command.
-
-Example command
-
-`rpc.py pmem_pool_info /path/to/pmem_pool`
-
-To remove pmem pool file user can use `delete_pmem_pool` RPC command.
+To get information on created pmem pool file user can use `bdev_pmem_get_pool_info` RPC command.
 
 Example command
 
-`rpc.py delete_pmem_pool /path/to/pmem_pool`
+`rpc.py bdev_pmem_get_pool_info /path/to/pmem_pool`
 
-To create bdev based on pmemblk pool file user should use `construct_pmem_bdev ` RPC
+To remove pmem pool file user can use `bdev_pmem_delete_pool` RPC command.
+
+Example command
+
+`rpc.py bdev_pmem_delete_pool /path/to/pmem_pool`
+
+To create bdev based on pmemblk pool file user should use `bdev_pmem_create ` RPC
 command.
 
 Example command
 
-`rpc.py construct_pmem_bdev /path/to/pmem_pool -n pmem`
+`rpc.py bdev_pmem_create /path/to/pmem_pool -n pmem`
 
-To remove a block device representation use the delete_pmem_bdev command.
+To remove a block device representation use the bdev_pmem_delete command.
 
-`rpc.py delete_pmem_bdev pmem`
+`rpc.py bdev_pmem_delete pmem`
 
 # Virtio Block {#bdev_config_virtio_blk}
 
@@ -546,34 +563,34 @@ The following command creates a Virtio-Block device named `VirtioBlk0` from a vh
 socket `/tmp/vhost.0` exposed directly by SPDK @ref vhost. Optional `vq-count` and
 `vq-size` params specify number of request queues and queue depth to be used.
 
-`rpc.py construct_virtio_dev --dev-type blk --trtype user --traddr /tmp/vhost.0 --vq-count 2 --vq-size 512 VirtioBlk0`
+`rpc.py bdev_virtio_attach_controller --dev-type blk --trtype user --traddr /tmp/vhost.0 --vq-count 2 --vq-size 512 VirtioBlk0`
 
 The driver can be also used inside QEMU-based VMs. The following command creates a Virtio
 Block device named `VirtioBlk0` from a Virtio PCI device at address `0000:00:01.0`.
 The entire configuration will be read automatically from PCI Configuration Space. It will
 reflect all parameters passed to QEMU's vhost-user-scsi-pci device.
 
-`rpc.py construct_virtio_dev --dev-type blk --trtype pci --traddr 0000:01:00.0 VirtioBlk1`
+`rpc.py bdev_virtio_attach_controller --dev-type blk --trtype pci --traddr 0000:01:00.0 VirtioBlk1`
 
 Virtio-Block devices can be removed with the following command
 
-`rpc.py remove_virtio_bdev VirtioBlk0`
+`rpc.py bdev_virtio_detach_controller VirtioBlk0`
 
 # Virtio SCSI {#bdev_config_virtio_scsi}
 
 The Virtio-SCSI driver allows creating SPDK block devices from Virtio-SCSI LUNs.
 
-Virtio-SCSI bdevs are constructed the same way as Virtio-Block ones.
+Virtio-SCSI bdevs are created the same way as Virtio-Block ones.
 
-`rpc.py construct_virtio_dev --dev-type scsi --trtype user --traddr /tmp/vhost.0 --vq-count 2 --vq-size 512 VirtioScsi0`
+`rpc.py bdev_virtio_attach_controller --dev-type scsi --trtype user --traddr /tmp/vhost.0 --vq-count 2 --vq-size 512 VirtioScsi0`
 
-`rpc.py construct_virtio_dev --dev-type scsi --trtype pci --traddr 0000:01:00.0 VirtioScsi0`
+`rpc.py bdev_virtio_attach_controller --dev-type scsi --trtype pci --traddr 0000:01:00.0 VirtioScsi0`
 
 Each Virtio-SCSI device may export up to 64 block devices named VirtioScsi0t0 ~ VirtioScsi0t63,
 one LUN (LUN0) per SCSI device. The above 2 commands will output names of all exposed bdevs.
 
 Virtio-SCSI devices can be removed with the following command
 
-`rpc.py remove_virtio_bdev VirtioScsi0`
+`rpc.py bdev_virtio_detach_controller VirtioScsi0`
 
 Removing a Virtio-SCSI device will destroy all its bdevs.

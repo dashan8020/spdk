@@ -22,7 +22,7 @@ function waitforio() {
 	local ret=1
 	local i
 	for (( i = 10; i != 0; i-- )); do
-		read_io_count=$($rpc_py -s $1 get_bdevs_iostat -b $2 | jq -r '.bdevs[0].num_read_ops')
+		read_io_count=$($rpc_py -s $1 bdev_get_iostat -b $2 | jq -r '.bdevs[0].num_read_ops')
 		# A few I/O will happen during initial examine.  So wait until at least 100 I/O
 		#  have completed to know that bdevperf is really generating the I/O.
 		if [ $read_io_count -ge 100 ]; then
@@ -57,7 +57,7 @@ rm -rf $testdir/rpcs.txt
 for i in $(seq 1 $num_subsystems)
 do
 	echo bdev_malloc_create $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE -b Malloc$i >> $testdir/rpcs.txt
-	echo nvmf_subsystem_create nqn.2016-06.io.spdk:cnode$i -a -s SPDK$i >> $testdir/rpcs.txt
+	echo nvmf_create_subsystem nqn.2016-06.io.spdk:cnode$i -a -s SPDK$i >> $testdir/rpcs.txt
 	echo nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode$i Malloc$i >> $testdir/rpcs.txt
 	echo nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode$i -t $TEST_TRANSPORT -a $NVMF_FIRST_TARGET_IP -s $NVMF_PORT >> $testdir/rpcs.txt
 
@@ -73,7 +73,7 @@ timing_enter test1
 $rootdir/test/app/bdev_svc/bdev_svc -m 0x1 -i 1 -r /var/tmp/bdevperf.sock -c $testdir/bdevperf.conf &
 perfpid=$!
 waitforlisten $perfpid /var/tmp/bdevperf.sock
-$rpc_py -s /var/tmp/bdevperf.sock wait_subsystem_init
+$rpc_py -s /var/tmp/bdevperf.sock framework_wait_init
 
 # Kill bdev_svc
 kill -9 $perfpid || true
@@ -94,7 +94,7 @@ timing_enter test2
 $rootdir/test/bdev/bdevperf/bdevperf -r /var/tmp/bdevperf.sock -c $testdir/bdevperf.conf -q 64 -o 65536 -w verify -t 10 &
 perfpid=$!
 waitforlisten $perfpid /var/tmp/bdevperf.sock
-$rpc_py -s /var/tmp/bdevperf.sock wait_subsystem_init
+$rpc_py -s /var/tmp/bdevperf.sock framework_wait_init
 
 waitforio /var/tmp/bdevperf.sock Nvme1n1
 
@@ -113,7 +113,7 @@ timing_enter test3
 $rootdir/test/bdev/bdevperf/bdevperf -r /var/tmp/bdevperf.sock -c $testdir/bdevperf.conf -q 64 -o 65536 -w verify -t 10 &
 perfpid=$!
 waitforlisten $perfpid /var/tmp/bdevperf.sock
-$rpc_py -s /var/tmp/bdevperf.sock wait_subsystem_init
+$rpc_py -s /var/tmp/bdevperf.sock framework_wait_init
 
 # Expand the trap to clean up bdevperf if something goes wrong
 trap 'process_shm --id $NVMF_APP_SHM_ID; kill -9 $perfpid || true; nvmftestfini; exit 1' SIGINT SIGTERM EXIT

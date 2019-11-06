@@ -70,8 +70,6 @@ static pthread_mutex_t g_conns_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static struct spdk_poller *g_shutdown_timer = NULL;
 
-static void iscsi_conn_full_feature_migrate(void *arg);
-static void iscsi_conn_stop(struct spdk_iscsi_conn *conn);
 static void iscsi_conn_sock_cb(void *arg, struct spdk_sock_group *group,
 			       struct spdk_sock *sock);
 
@@ -222,6 +220,10 @@ spdk_iscsi_conn_construct(struct spdk_iscsi_portal *portal,
 	conn->nop_outstanding = false;
 	conn->data_out_cnt = 0;
 	conn->data_in_cnt = 0;
+	conn->disable_chap = portal->group->disable_chap;
+	conn->require_chap = portal->group->require_chap;
+	conn->mutual_chap = portal->group->mutual_chap;
+	conn->chap_group = portal->group->chap_group;
 	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
 	conn->MaxRecvDataSegmentLength = 8192; /* RFC3720(12.12) */
 
@@ -249,6 +251,8 @@ spdk_iscsi_conn_construct(struct spdk_iscsi_portal *portal,
 		conn->outstanding_r2t_tasks[i] = NULL;
 	}
 
+	conn->pdu_recv_state = ISCSI_PDU_RECV_STATE_AWAIT_PDU_READY;
+
 	TAILQ_INIT(&conn->write_pdu_list);
 	TAILQ_INIT(&conn->snack_pdu_list);
 	TAILQ_INIT(&conn->queued_r2t_tasks);
@@ -261,12 +265,6 @@ spdk_iscsi_conn_construct(struct spdk_iscsi_portal *portal,
 	if (rc < 0) {
 		SPDK_ERRLOG("spdk_sock_getaddr() failed\n");
 		goto error_return;
-	}
-
-	bufsize = 2 * 1024 * 1024;
-	rc = spdk_sock_set_recvbuf(conn->sock, bufsize);
-	if (rc != 0) {
-		SPDK_ERRLOG("spdk_sock_set_recvbuf failed\n");
 	}
 
 	bufsize = 32 * 1024 * 1024 / g_spdk_iscsi.MaxConnections;
@@ -291,6 +289,7 @@ spdk_iscsi_conn_construct(struct spdk_iscsi_portal *portal,
 		SPDK_ERRLOG("iscsi_conn_params_init() failed\n");
 		goto error_return;
 	}
+	conn->logout_request_timer = NULL;
 	conn->logout_timer = NULL;
 	conn->shutdown_timer = NULL;
 	SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "Launching connection on acceptor thread\n");
@@ -378,12 +377,6 @@ _iscsi_conn_free(struct spdk_iscsi_conn *conn)
 
 	spdk_iscsi_param_free(conn->params);
 
-	/*
-	 * Each connection pre-allocates its next PDU - make sure these get
-	 *  freed here.
-	 */
-	spdk_put_pdu(conn->pdu_in_progress);
-
 	free_conn(conn);
 }
 
@@ -456,126 +449,6 @@ end:
 	_iscsi_conn_free(conn);
 
 	pthread_mutex_unlock(&g_conns_mutex);
-}
-
-static int
-_iscsi_conn_check_shutdown(void *arg)
-{
-	struct spdk_iscsi_conn *conn = arg;
-	int rc;
-
-	rc = iscsi_conn_free_tasks(conn);
-	if (rc < 0) {
-		return 1;
-	}
-
-	spdk_poller_unregister(&conn->shutdown_timer);
-
-	iscsi_conn_stop(conn);
-	iscsi_conn_free(conn);
-
-	return 1;
-}
-
-static void
-_iscsi_conn_destruct(struct spdk_iscsi_conn *conn)
-{
-	int rc;
-
-	spdk_clear_all_transfer_task(conn, NULL, NULL);
-
-	iscsi_poll_group_remove_conn(conn->pg, conn);
-	spdk_sock_close(&conn->sock);
-	spdk_poller_unregister(&conn->logout_timer);
-
-	rc = iscsi_conn_free_tasks(conn);
-	if (rc < 0) {
-		/* The connection cannot be freed yet. Check back later. */
-		conn->shutdown_timer = spdk_poller_register(_iscsi_conn_check_shutdown, conn, 1000);
-	} else {
-		iscsi_conn_stop(conn);
-		iscsi_conn_free(conn);
-	}
-}
-
-static int
-_iscsi_conn_check_pending_tasks(void *arg)
-{
-	struct spdk_iscsi_conn *conn = arg;
-
-	if (conn->dev != NULL && spdk_scsi_dev_has_pending_tasks(conn->dev)) {
-		return 1;
-	}
-
-	spdk_poller_unregister(&conn->shutdown_timer);
-
-	_iscsi_conn_destruct(conn);
-
-	return 1;
-}
-
-void
-spdk_iscsi_conn_destruct(struct spdk_iscsi_conn *conn)
-{
-	/* If a connection is already in exited status, just return */
-	if (conn->state >= ISCSI_CONN_STATE_EXITED) {
-		return;
-	}
-
-	conn->state = ISCSI_CONN_STATE_EXITED;
-
-	if (conn->sess != NULL && conn->pending_task_cnt > 0) {
-		iscsi_conn_cleanup_backend(conn);
-	}
-
-	if (conn->dev != NULL && spdk_scsi_dev_has_pending_tasks(conn->dev)) {
-		conn->shutdown_timer = spdk_poller_register(_iscsi_conn_check_pending_tasks, conn, 1000);
-	} else {
-		_iscsi_conn_destruct(conn);
-	}
-}
-
-int
-spdk_iscsi_get_active_conns(struct spdk_iscsi_tgt_node *target)
-{
-	struct spdk_iscsi_conn *conn;
-	int num = 0;
-	int i;
-
-	pthread_mutex_lock(&g_conns_mutex);
-	for (i = 0; i < MAX_ISCSI_CONNECTIONS; i++) {
-		conn = find_iscsi_connection_by_id(i);
-		if (conn == NULL) {
-			continue;
-		}
-		if (target != NULL && conn->target != target) {
-			continue;
-		}
-		num++;
-	}
-	pthread_mutex_unlock(&g_conns_mutex);
-	return num;
-}
-
-static void
-iscsi_conn_check_shutdown_cb(void *arg1)
-{
-	_iscsi_conns_cleanup();
-	spdk_shutdown_iscsi_conns_done();
-}
-
-static int
-iscsi_conn_check_shutdown(void *arg)
-{
-	if (spdk_iscsi_get_active_conns(NULL) != 0) {
-		return 1;
-	}
-
-	spdk_poller_unregister(&g_shutdown_timer);
-
-	spdk_thread_send_msg(spdk_get_thread(), iscsi_conn_check_shutdown_cb, NULL);
-
-	return 1;
 }
 
 static void
@@ -735,8 +608,216 @@ iscsi_conn_stop(struct spdk_iscsi_conn *conn)
 	       spdk_get_thread());
 }
 
+static int
+_iscsi_conn_check_shutdown(void *arg)
+{
+	struct spdk_iscsi_conn *conn = arg;
+	int rc;
+
+	rc = iscsi_conn_free_tasks(conn);
+	if (rc < 0) {
+		return 1;
+	}
+
+	spdk_poller_unregister(&conn->shutdown_timer);
+
+	iscsi_conn_stop(conn);
+	iscsi_conn_free(conn);
+
+	return 1;
+}
+
+static void
+_iscsi_conn_destruct(struct spdk_iscsi_conn *conn)
+{
+	int rc;
+
+	spdk_clear_all_transfer_task(conn, NULL, NULL);
+
+	iscsi_poll_group_remove_conn(conn->pg, conn);
+	spdk_sock_close(&conn->sock);
+	spdk_poller_unregister(&conn->logout_request_timer);
+	spdk_poller_unregister(&conn->logout_timer);
+
+	rc = iscsi_conn_free_tasks(conn);
+	if (rc < 0) {
+		/* The connection cannot be freed yet. Check back later. */
+		conn->shutdown_timer = spdk_poller_register(_iscsi_conn_check_shutdown, conn, 1000);
+	} else {
+		iscsi_conn_stop(conn);
+		iscsi_conn_free(conn);
+	}
+}
+
+static int
+_iscsi_conn_check_pending_tasks(void *arg)
+{
+	struct spdk_iscsi_conn *conn = arg;
+
+	if (conn->dev != NULL &&
+	    spdk_scsi_dev_has_pending_tasks(conn->dev, conn->initiator_port)) {
+		return 1;
+	}
+
+	spdk_poller_unregister(&conn->shutdown_timer);
+
+	_iscsi_conn_destruct(conn);
+
+	return 1;
+}
+
 void
-spdk_iscsi_conns_start_exit(struct spdk_iscsi_tgt_node *target)
+spdk_iscsi_conn_destruct(struct spdk_iscsi_conn *conn)
+{
+	struct spdk_iscsi_pdu *pdu;
+	struct spdk_iscsi_task *task;
+	int opcode;
+
+	/* If a connection is already in exited status, just return */
+	if (conn->state >= ISCSI_CONN_STATE_EXITED) {
+		return;
+	}
+
+	conn->state = ISCSI_CONN_STATE_EXITED;
+
+	/*
+	 * Each connection pre-allocates its next PDU - make sure these get
+	 *  freed here.
+	 */
+	pdu = conn->pdu_in_progress;
+	if (pdu) {
+		/* remove the task left in the PDU too. */
+		task = pdu->task;
+		if (task) {
+			opcode = pdu->bhs.opcode;
+			switch (opcode) {
+			case ISCSI_OP_SCSI:
+			case ISCSI_OP_SCSI_DATAOUT:
+				spdk_scsi_task_process_abort(&task->scsi);
+				spdk_iscsi_task_cpl(&task->scsi);
+				break;
+			default:
+				SPDK_ERRLOG("unexpected opcode %x\n", opcode);
+				spdk_iscsi_task_put(task);
+				break;
+			}
+		}
+		spdk_put_pdu(pdu);
+		conn->pdu_in_progress = NULL;
+	}
+
+	if (conn->sess != NULL && conn->pending_task_cnt > 0) {
+		iscsi_conn_cleanup_backend(conn);
+	}
+
+	if (conn->dev != NULL &&
+	    spdk_scsi_dev_has_pending_tasks(conn->dev, conn->initiator_port)) {
+		conn->shutdown_timer = spdk_poller_register(_iscsi_conn_check_pending_tasks, conn, 1000);
+	} else {
+		_iscsi_conn_destruct(conn);
+	}
+}
+
+int
+spdk_iscsi_get_active_conns(struct spdk_iscsi_tgt_node *target)
+{
+	struct spdk_iscsi_conn *conn;
+	int num = 0;
+	int i;
+
+	pthread_mutex_lock(&g_conns_mutex);
+	for (i = 0; i < MAX_ISCSI_CONNECTIONS; i++) {
+		conn = find_iscsi_connection_by_id(i);
+		if (conn == NULL) {
+			continue;
+		}
+		if (target != NULL && conn->target != target) {
+			continue;
+		}
+		num++;
+	}
+	pthread_mutex_unlock(&g_conns_mutex);
+	return num;
+}
+
+static void
+iscsi_conn_check_shutdown_cb(void *arg1)
+{
+	_iscsi_conns_cleanup();
+	spdk_shutdown_iscsi_conns_done();
+}
+
+static int
+iscsi_conn_check_shutdown(void *arg)
+{
+	if (spdk_iscsi_get_active_conns(NULL) != 0) {
+		return 1;
+	}
+
+	spdk_poller_unregister(&g_shutdown_timer);
+
+	spdk_thread_send_msg(spdk_get_thread(), iscsi_conn_check_shutdown_cb, NULL);
+
+	return 1;
+}
+
+static void
+iscsi_send_logout_request(struct spdk_iscsi_conn *conn)
+{
+	struct spdk_iscsi_pdu *rsp_pdu;
+	struct iscsi_bhs_async *rsph;
+
+	rsp_pdu = spdk_get_pdu();
+	assert(rsp_pdu != NULL);
+
+	rsph = (struct iscsi_bhs_async *)&rsp_pdu->bhs;
+	rsp_pdu->data = NULL;
+
+	rsph->opcode = ISCSI_OP_ASYNC;
+	to_be32(&rsph->ffffffff, 0xFFFFFFFF);
+	rsph->async_event = 1;
+	to_be16(&rsph->param3, ISCSI_LOGOUT_REQUEST_TIMEOUT);
+
+	to_be32(&rsph->stat_sn, conn->StatSN);
+	to_be32(&rsph->exp_cmd_sn, conn->sess->ExpCmdSN);
+	to_be32(&rsph->max_cmd_sn, conn->sess->MaxCmdSN);
+
+	spdk_iscsi_conn_write_pdu(conn, rsp_pdu);
+}
+
+static int
+logout_request_timeout(void *arg)
+{
+	struct spdk_iscsi_conn *conn = arg;
+
+	if (conn->state < ISCSI_CONN_STATE_EXITING) {
+		conn->state = ISCSI_CONN_STATE_EXITING;
+	}
+
+	return -1;
+}
+
+static void
+iscsi_conn_request_logout(struct spdk_iscsi_conn *conn)
+{
+	if (conn->state == ISCSI_CONN_STATE_INVALID) {
+		/* Move it to EXITING state if the connection is in login. */
+		conn->state = ISCSI_CONN_STATE_EXITING;
+	} else if (conn->state == ISCSI_CONN_STATE_RUNNING &&
+		   conn->logout_request_timer == NULL) {
+		/* If the connection is running and logout is not requested yet,
+		 *  request logout to initiator and wait for the logout process
+		 *  to start.
+		 */
+		iscsi_send_logout_request(conn);
+
+		conn->logout_request_timer = spdk_poller_register(logout_request_timeout,
+					     conn, ISCSI_LOGOUT_REQUEST_TIMEOUT * 1000000);
+	}
+}
+
+void
+spdk_iscsi_conns_request_logout(struct spdk_iscsi_tgt_node *target)
 {
 	struct spdk_iscsi_conn	*conn;
 	int			i;
@@ -753,12 +834,7 @@ spdk_iscsi_conns_start_exit(struct spdk_iscsi_tgt_node *target)
 			continue;
 		}
 
-		/* Do not set conn->state if the connection has already started exiting.
-		  * This ensures we do not move a connection from EXITED state back to EXITING.
-		  */
-		if (conn->state < ISCSI_CONN_STATE_EXITING) {
-			conn->state = ISCSI_CONN_STATE_EXITING;
-		}
+		iscsi_conn_request_logout(conn);
 	}
 
 	pthread_mutex_unlock(&g_conns_mutex);
@@ -767,7 +843,7 @@ spdk_iscsi_conns_start_exit(struct spdk_iscsi_tgt_node *target)
 void
 spdk_shutdown_iscsi_conns(void)
 {
-	spdk_iscsi_conns_start_exit(NULL);
+	spdk_iscsi_conns_request_logout(NULL);
 
 	g_shutdown_timer = spdk_poller_register(iscsi_conn_check_shutdown, NULL, 1000);
 }
@@ -1258,12 +1334,10 @@ iscsi_conn_flush_pdus_internal(struct spdk_iscsi_conn *conn)
  * underlying TCP socket buffer - for example, in the case where the
  * socket buffer is already full.
  *
- * During normal RUNNING connection state, if not all PDUs are flushed,
- * then subsequent calls to this routine will eventually flush
- * remaining PDUs.
+ * If not all PDUs are flushed, then subsequent calls to this routine
+ * will eventually flush remaining PDUs.
  *
- * During other connection states (EXITING or LOGGED_OUT), this
- * function will spin until all PDUs have successfully been flushed.
+ * PDUs are flushed only during normal RUNNING connection state.
  */
 static int
 iscsi_conn_flush_pdus(void *_conn)
@@ -1271,32 +1345,19 @@ iscsi_conn_flush_pdus(void *_conn)
 	struct spdk_iscsi_conn *conn = _conn;
 	int rc;
 
-	if (conn->state == ISCSI_CONN_STATE_RUNNING) {
-		rc = iscsi_conn_flush_pdus_internal(conn);
-		if (rc == 0 && conn->flush_poller != NULL) {
-			spdk_poller_unregister(&conn->flush_poller);
-		} else if (rc == 1 && conn->flush_poller == NULL) {
-			conn->flush_poller = spdk_poller_register(iscsi_conn_flush_pdus,
-					     conn, 50);
-		}
-	} else {
-		/*
-		 * If the connection state is not RUNNING, then
-		 * keep trying to flush PDUs until our list is
-		 * empty - to make sure all data is sent before
-		 * closing the connection.
-		 */
-		do {
-			rc = iscsi_conn_flush_pdus_internal(conn);
-		} while (rc == 1);
+	if (spdk_unlikely(conn->state > ISCSI_CONN_STATE_RUNNING)) {
+		return 1;
 	}
 
-	if (rc < 0 && conn->state < ISCSI_CONN_STATE_EXITING) {
-		/*
-		 * If the poller has already started destruction of the connection,
-		 *  i.e. the socket read failed, then the connection state may already
-		 *  be EXITED.  We don't want to set it back to EXITING in that case.
-		 */
+	rc = iscsi_conn_flush_pdus_internal(conn);
+	if (rc == 0 && conn->flush_poller != NULL) {
+		spdk_poller_unregister(&conn->flush_poller);
+	} else if (rc == 1 && conn->flush_poller == NULL) {
+		conn->flush_poller = spdk_poller_register(iscsi_conn_flush_pdus,
+				     conn, 50);
+	}
+
+	if (rc < 0) {
 		conn->state = ISCSI_CONN_STATE_EXITING;
 	}
 
@@ -1358,48 +1419,6 @@ spdk_iscsi_conn_write_pdu(struct spdk_iscsi_conn *conn, struct spdk_iscsi_pdu *p
 	iscsi_conn_flush_pdus(conn);
 }
 
-#define GET_PDU_LOOP_COUNT	16
-
-static int
-iscsi_conn_handle_incoming_pdus(struct spdk_iscsi_conn *conn)
-{
-	struct spdk_iscsi_pdu *pdu;
-	int i, rc;
-
-	/* Read new PDUs from network */
-	for (i = 0; i < GET_PDU_LOOP_COUNT; i++) {
-		rc = spdk_iscsi_read_pdu(conn, &pdu);
-		if (rc == 0) {
-			break;
-		} else if (rc < 0) {
-			SPDK_DEBUGLOG(SPDK_LOG_ISCSI, "Failed to read pdu, error=%d\n", rc);
-			return SPDK_ISCSI_CONNECTION_FATAL;
-		}
-
-		if (conn->state == ISCSI_CONN_STATE_LOGGED_OUT) {
-			SPDK_ERRLOG("pdu received after logout\n");
-			spdk_put_pdu(pdu);
-			return SPDK_ISCSI_CONNECTION_FATAL;
-		}
-
-		rc = spdk_iscsi_execute(conn, pdu);
-		spdk_put_pdu(pdu);
-		if (rc < 0) {
-			SPDK_ERRLOG("spdk_iscsi_execute() fatal error on %s(%s)\n",
-				    conn->target_port != NULL ? spdk_scsi_port_get_name(conn->target_port) : "NULL",
-				    conn->initiator_port != NULL ? spdk_scsi_port_get_name(conn->initiator_port) : "NULL");
-			return SPDK_ISCSI_CONNECTION_FATAL;
-		}
-
-		spdk_trace_record(TRACE_ISCSI_TASK_EXECUTED, 0, 0, (uintptr_t)pdu, 0);
-		if (conn->is_stopped) {
-			break;
-		}
-	}
-
-	return i;
-}
-
 static void
 iscsi_conn_sock_cb(void *arg, struct spdk_sock_group *group, struct spdk_sock *sock)
 {
@@ -1414,10 +1433,9 @@ iscsi_conn_sock_cb(void *arg, struct spdk_sock_group *group, struct spdk_sock *s
 	}
 
 	/* Handle incoming PDUs */
-	rc = iscsi_conn_handle_incoming_pdus(conn);
+	rc = spdk_iscsi_handle_incoming_pdus(conn);
 	if (rc < 0) {
 		conn->state = ISCSI_CONN_STATE_EXITING;
-		iscsi_conn_flush_pdus(conn);
 	}
 }
 
@@ -1495,7 +1513,9 @@ logout_timeout(void *arg)
 {
 	struct spdk_iscsi_conn *conn = arg;
 
-	spdk_iscsi_conn_destruct(conn);
+	if (conn->state < ISCSI_CONN_STATE_EXITING) {
+		conn->state = ISCSI_CONN_STATE_EXITING;
+	}
 
 	return -1;
 }
@@ -1503,7 +1523,7 @@ logout_timeout(void *arg)
 void
 spdk_iscsi_conn_logout(struct spdk_iscsi_conn *conn)
 {
-	conn->state = ISCSI_CONN_STATE_LOGGED_OUT;
+	conn->is_logged_out = true;
 	conn->logout_timer = spdk_poller_register(logout_timeout, conn, ISCSI_LOGOUT_TIMEOUT * 1000000);
 }
 

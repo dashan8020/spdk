@@ -11,12 +11,12 @@ test_file_name="some_test_file"
 function error()
 {
 	echo "==========="
-	echo -e "ERROR: $@"
+	echo -e "ERROR: $*"
 	echo "==========="
 	trap - ERR
 	set +e
 	umount "$test_folder_name"
-	rm -rf "$testdir/$test_folder_name"
+	rm -rf "${testdir:?}/${test_folder_name:?}"
 	exit 1
 }
 
@@ -37,7 +37,7 @@ mount /dev/$disk_name"1" $test_folder_name
 
 echo "INFO: Removing folder and unmounting $test_folder_name"
 umount "$test_folder_name"
-rm -rf "$testdir/$test_folder_name"
+rm -rf "${testdir:?}/${test_folder_name:?}"
 
 echo "INFO: Deleting partition"
 echo -e "d\n1\nw" | fdisk /dev/$disk_name

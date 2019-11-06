@@ -357,7 +357,6 @@ nvmf_fc_ls_new_connection(struct spdk_nvmf_fc_association *assoc, uint16_t qid,
 	 */
 	spdk_nvmf_fc_create_trid(&fc_conn->trid, tgtport->fc_nodename.u.wwn,
 				 tgtport->fc_portname.u.wwn);
-	TAILQ_INIT(&fc_conn->pending_queue);
 
 	return fc_conn;
 }
@@ -596,7 +595,7 @@ nvmf_fc_ls_add_conn_to_poller(
 
 	/* Let the nvmf_tgt decide which pollgroup to use. */
 	fc_conn->create_opd = opd;
-	fc_port->new_qp_cb(&fc_conn->qpair);
+	fc_port->new_qp_cb(&fc_conn->qpair, fc_port->new_qp_arg);
 }
 
 /* Delete association functions */
@@ -1597,7 +1596,7 @@ nvmf_fc_poller_api_add_hwqp(void *arg)
 	struct spdk_nvmf_fc_hwqp *hwqp = (struct spdk_nvmf_fc_hwqp *)arg;
 
 	hwqp->lcore_id = spdk_env_get_current_core(); /* for tracing purposes only */
-	TAILQ_INSERT_TAIL(&hwqp->fc_poll_group->hwqp_list, hwqp, link);
+	TAILQ_INSERT_TAIL(&hwqp->fgroup->hwqp_list, hwqp, link);
 	/* note: no callback from this api */
 }
 
@@ -1605,10 +1604,10 @@ static void
 nvmf_fc_poller_api_remove_hwqp(void *arg)
 {
 	struct spdk_nvmf_fc_hwqp *hwqp = (struct spdk_nvmf_fc_hwqp *)arg;
-	struct spdk_nvmf_fc_poll_group *fc_poll_group = hwqp->fc_poll_group;
+	struct spdk_nvmf_fc_poll_group *fgroup = hwqp->fgroup;
 
-	TAILQ_REMOVE(&fc_poll_group->hwqp_list, hwqp, link);
-	hwqp->fc_poll_group = NULL;
+	TAILQ_REMOVE(&fgroup->hwqp_list, hwqp, link);
+	hwqp->fgroup = NULL;
 	/* note: no callback from this api */
 }
 

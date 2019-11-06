@@ -277,67 +277,7 @@ int
 nvme_tcp_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx,
 		    bool direct_connect)
 {
-	struct spdk_nvme_ctrlr_opts discovery_opts;
-	struct spdk_nvme_ctrlr *discovery_ctrlr;
-	union spdk_nvme_cc_register cc;
-	int rc;
-	struct nvme_completion_poll_status status;
-
-	if (strcmp(probe_ctx->trid.subnqn, SPDK_NVMF_DISCOVERY_NQN) != 0) {
-		/* Not a discovery controller - connect directly. */
-		rc = nvme_ctrlr_probe(&probe_ctx->trid, probe_ctx, NULL);
-		return rc;
-	}
-
-	spdk_nvme_ctrlr_get_default_ctrlr_opts(&discovery_opts, sizeof(discovery_opts));
-	/* For discovery_ctrlr set the timeout to 0 */
-	discovery_opts.keep_alive_timeout_ms = 0;
-
-	discovery_ctrlr = nvme_tcp_ctrlr_construct(&probe_ctx->trid, &discovery_opts, NULL);
-	if (discovery_ctrlr == NULL) {
-		return -1;
-	}
-
-	/* TODO: this should be using the normal NVMe controller initialization process */
-	cc.raw = 0;
-	cc.bits.en = 1;
-	cc.bits.iosqes = 6; /* SQ entry size == 64 == 2^6 */
-	cc.bits.iocqes = 4; /* CQ entry size == 16 == 2^4 */
-	rc = nvme_transport_ctrlr_set_reg_4(discovery_ctrlr, offsetof(struct spdk_nvme_registers, cc.raw),
-					    cc.raw);
-	if (rc < 0) {
-		SPDK_ERRLOG("Failed to set cc\n");
-		nvme_ctrlr_destruct(discovery_ctrlr);
-		return -1;
-	}
-
-	/* Direct attach through spdk_nvme_connect() API */
-	if (direct_connect == true) {
-		/* get the cdata info */
-		status.done = false;
-		rc = nvme_ctrlr_cmd_identify(discovery_ctrlr, SPDK_NVME_IDENTIFY_CTRLR, 0, 0,
-					     &discovery_ctrlr->cdata, sizeof(discovery_ctrlr->cdata),
-					     nvme_completion_poll_cb, &status);
-		if (rc != 0) {
-			SPDK_ERRLOG("Failed to identify cdata\n");
-			return rc;
-		}
-
-		if (spdk_nvme_wait_for_completion(discovery_ctrlr->adminq, &status)) {
-			SPDK_ERRLOG("nvme_identify_controller failed!\n");
-			return -ENXIO;
-		}
-		/* Set the ready state to skip the normal init process */
-		discovery_ctrlr->state = NVME_CTRLR_STATE_READY;
-		nvme_ctrlr_connected(probe_ctx, discovery_ctrlr);
-		nvme_ctrlr_add_process(discovery_ctrlr, 0);
-		return 0;
-	}
-
-	rc = nvme_fabric_ctrlr_discover(discovery_ctrlr, probe_ctx);
-	nvme_ctrlr_destruct(discovery_ctrlr);
-	SPDK_DEBUGLOG(SPDK_LOG_NVME, "leave\n");
-	return rc;
+	return nvme_fabric_ctrlr_scan(probe_ctx, direct_connect);
 }
 
 int
@@ -402,7 +342,7 @@ nvme_tcp_qpair_process_send_queue(struct nvme_tcp_qpair *tqpair)
 	 * Build up a list of iovecs for the first few PDUs in the
 	 *  tqpair 's send_queue.
 	 */
-	while (pdu != NULL && ((array_size - iovcnt) >= 3)) {
+	while (pdu != NULL && ((array_size - iovcnt) >= (2 + (int)pdu->data_iovcnt))) {
 		iovcnt += nvme_tcp_build_iovs(&iovs[iovcnt], array_size - iovcnt,
 					      pdu, tqpair->host_hdgst_enable,
 					      tqpair->host_ddgst_enable, &mapped_length);
@@ -690,12 +630,8 @@ nvme_tcp_qpair_submit_request(struct spdk_nvme_qpair *qpair,
 
 	tcp_req = nvme_tcp_req_get(tqpair);
 	if (!tcp_req) {
-		/*
-		 * No tcp_req is available, so queue the request to be
-		 *  processed later.
-		 */
-		STAILQ_INSERT_TAIL(&qpair->queued_req, req, stailq);
-		return 0;
+		/* Inform the upper layer to try again later. */
+		return -EAGAIN;
 	}
 
 	if (nvme_tcp_req_init(tqpair, req, tcp_req)) {
@@ -922,18 +858,6 @@ get_nvme_active_req_by_cid(struct nvme_tcp_qpair *tqpair, uint32_t cid)
 }
 
 static void
-nvme_tcp_free_and_handle_queued_req(struct spdk_nvme_qpair *qpair)
-{
-	struct nvme_request *req;
-
-	if (!STAILQ_EMPTY(&qpair->queued_req) && !qpair->ctrlr->is_resetting) {
-		req = STAILQ_FIRST(&qpair->queued_req);
-		STAILQ_REMOVE_HEAD(&qpair->queued_req, stailq);
-		nvme_qpair_submit_request(qpair, req);
-	}
-}
-
-static void
 nvme_tcp_c2h_data_payload_handle(struct nvme_tcp_qpair *tqpair,
 				 struct nvme_tcp_pdu *pdu, uint32_t *reaped)
 {
@@ -942,7 +866,7 @@ nvme_tcp_c2h_data_payload_handle(struct nvme_tcp_qpair *tqpair,
 	struct spdk_nvme_cpl cpl = {};
 	uint8_t flags;
 
-	tcp_req = pdu->ctx;
+	tcp_req = pdu->req;
 	assert(tcp_req != NULL);
 
 	SPDK_DEBUGLOG(SPDK_LOG_NVME, "enter\n");
@@ -963,7 +887,6 @@ nvme_tcp_c2h_data_payload_handle(struct nvme_tcp_qpair *tqpair,
 		nvme_tcp_req_complete(tcp_req->req, &cpl);
 		nvme_tcp_req_put(tqpair, tcp_req);
 		(*reaped)++;
-		nvme_tcp_free_and_handle_queued_req(&tqpair->qpair);
 	}
 }
 
@@ -1123,7 +1046,6 @@ nvme_tcp_capsule_resp_hdr_handle(struct nvme_tcp_qpair *tqpair, struct nvme_tcp_
 	nvme_tcp_req_complete(tcp_req->req, &cpl);
 	nvme_tcp_req_put(tqpair, tcp_req);
 	(*reaped)++;
-	nvme_tcp_free_and_handle_queued_req(&tqpair->qpair);
 
 	SPDK_DEBUGLOG(SPDK_LOG_NVME, "complete tcp_req(%p) on tqpair=%p\n", tcp_req, tqpair);
 
@@ -1208,7 +1130,7 @@ nvme_tcp_c2h_data_hdr_handle(struct nvme_tcp_qpair *tqpair, struct nvme_tcp_pdu 
 
 	nvme_tcp_pdu_set_data_buf(pdu, tcp_req->iov, tcp_req->iovcnt,
 				  c2h_data->datao, c2h_data->datal);
-	pdu->ctx = tcp_req;
+	pdu->req = tcp_req;
 
 	nvme_tcp_qpair_set_recv_state(tqpair, NVME_TCP_PDU_RECV_STATE_AWAIT_PDU_PAYLOAD);
 	return;
@@ -1741,7 +1663,7 @@ nvme_tcp_ctrlr_create_qpair(struct spdk_nvme_ctrlr *ctrlr,
 		return NULL;
 	}
 
-	rc = nvme_tcp_qpair_connect(tqpair);
+	rc = nvme_transport_ctrlr_connect_qpair(ctrlr, qpair);
 	if (rc < 0) {
 		nvme_tcp_qpair_destroy(qpair);
 		return NULL;

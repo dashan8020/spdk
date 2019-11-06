@@ -167,7 +167,7 @@ static int spdk_process_new_interface_msg(struct nlmsghdr *h)
 
 	ifc = (struct spdk_interface *) malloc(sizeof(*ifc));
 	if (ifc == NULL) {
-		SPDK_ERRLOG("%s: Malloc failed\n", __func__);
+		SPDK_ERRLOG("Malloc failed\n");
 		return 1;
 	}
 
@@ -448,7 +448,7 @@ spdk_interface_destroy(void)
 }
 
 int
-spdk_interface_add_ip_address(int ifc_index, char *ip_addr)
+spdk_interface_net_interface_add_ip_address(int ifc_index, char *ip_addr)
 {
 	uint32_t addr;
 
@@ -457,7 +457,7 @@ spdk_interface_add_ip_address(int ifc_index, char *ip_addr)
 }
 
 int
-spdk_interface_delete_ip_address(int ifc_index, char *ip_addr)
+spdk_interface_net_interface_delete_ip_address(int ifc_index, char *ip_addr)
 {
 	uint32_t addr;
 
@@ -485,13 +485,13 @@ spdk_interface_destroy(void)
 }
 
 int
-spdk_interface_add_ip_address(int ifc_index, char *ip_addr)
+spdk_interface_net_interface_add_ip_address(int ifc_index, char *ip_addr)
 {
 	return -1;
 }
 
 int
-spdk_interface_delete_ip_address(int ifc_index, char *ip_addr)
+spdk_interface_net_interface_delete_ip_address(int ifc_index, char *ip_addr)
 {
 	return -1;
 }

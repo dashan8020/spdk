@@ -32,15 +32,7 @@
 #
 
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../../..)
-include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
-CFLAGS += -I.
-CFLAGS += $(ENV_CFLAGS)
-CFLAGS += -include rte_config.h
+APP = startup
 
-# These are the DPDK vhost files copied (for now) into SPDK
-C_SRCS += fd_man.c socket.c vhost_user.c vhost.c
-
-LIBNAME = rte_vhost
-
-include $(SPDK_ROOT_DIR)/mk/spdk.lib.mk
+include $(SPDK_ROOT_DIR)/mk/nvme.libtest.mk

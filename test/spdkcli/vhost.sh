@@ -34,7 +34,7 @@ $spdkcli_job "'/bdevs/aio create sample0 /tmp/sample_aio 512' 'sample0' True
 trtype=$($rootdir/scripts/gen_nvme.sh --json | jq -r '.config[].params | select(.name=="Nvme0").trtype')
 traddr=$($rootdir/scripts/gen_nvme.sh --json | jq -r '.config[].params | select(.name=="Nvme0").traddr')
 $spdkcli_job "'/bdevs/nvme create Nvme0 $trtype $traddr' 'Nvme0' True
-'/bdevs/split_disk split_bdev Nvme0n1 4' 'Nvme0n1p0' True
+'/bdevs/split_disk bdev_split_create Nvme0n1 4' 'Nvme0n1p0' True
 "
 timing_exit spdkcli_create_bdevs_config
 
@@ -99,7 +99,7 @@ $spdkcli_job "'vhost/scsi/vhost_scsi2 remove_target 2' 'Nvme0n1p3'
 'vhost/scsi delete vhost_scsi1' 'vhost_scsi1'
 'vhost/block delete vhost_blk2' 'vhost_blk2'
 'vhost/block delete vhost_blk1' 'vhost_blk1'
-'/bdevs/split_disk destruct_split_bdev Nvme0n1' 'Nvme0n1p0'
+'/bdevs/split_disk bdev_split_delete Nvme0n1' 'Nvme0n1p0'
 '/bdevs/aio delete sample0' 'sample0'
 '/bdevs/aio delete_all' 'sample1'
 '/bdevs/nvme delete Nvme0' 'Nvme0'

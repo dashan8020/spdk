@@ -107,7 +107,7 @@ fi
 echo -n "Checking comment style..."
 
 git grep --line-number -e '/[*][^ *-]' -- '*.[ch]' > comment.log || true
-git grep --line-number -e '[^ ][*]/' -- '*.[ch]' ':!lib/vhost/rte_vhost*/*' >> comment.log || true
+git grep --line-number -e '[^ ][*]/' -- '*.[ch]' ':!lib/rte_vhost*/*' >> comment.log || true
 git grep --line-number -e '^[*]' -- '*.[ch]' >> comment.log || true
 git grep --line-number -e '\s//' -- '*.[ch]' >> comment.log || true
 git grep --line-number -e '^//' -- '*.[ch]' >> comment.log || true
@@ -147,7 +147,7 @@ rm -f whitespace.log
 
 echo -n "Checking for use of forbidden library functions..."
 
-git grep --line-number -w '\(atoi\|atol\|atoll\|strncpy\|strcpy\|strcat\|sprintf\|vsprintf\)' -- './*.c' ':!lib/vhost/rte_vhost*/**' > badfunc.log || true
+git grep --line-number -w '\(atoi\|atol\|atoll\|strncpy\|strcpy\|strcat\|sprintf\|vsprintf\)' -- './*.c' ':!lib/rte_vhost*/**' > badfunc.log || true
 if [ -s badfunc.log ]; then
 	echo " Forbidden library functions detected"
 	cat badfunc.log
@@ -182,7 +182,7 @@ fi
 rm -f eofnl.log
 
 echo -n "Checking for POSIX includes..."
-git grep -I -i -f scripts/posix.txt -- './*' ':!include/spdk/stdinc.h' ':!include/linux/**' ':!lib/vhost/rte_vhost*/**' ':!scripts/posix.txt' ':!*.patch' > scripts/posix.log || true
+git grep -I -i -f scripts/posix.txt -- './*' ':!include/spdk/stdinc.h' ':!include/linux/**' ':!lib/rte_vhost*/**' ':!scripts/posix.txt' ':!*.patch' > scripts/posix.log || true
 if [ -s scripts/posix.log ]; then
 	echo "POSIX includes detected. Please include spdk/stdinc.h instead."
 	cat scripts/posix.log
@@ -239,19 +239,28 @@ if hash shellcheck 2>/dev/null; then
 	# For more information about the topic and a list of human-friendly error descripions
 	# go to: https://trello.com/c/29Z90j1W
 	# Error descriptions can also be found at: https://github.com/koalaman/shellcheck/wiki
-	SHCK_EXCLUDE="SC1001,SC1003,SC1004,SC1010,\
-SC1083,SC1087,SC1090,SC1091,SC1113,SC2001,SC2002,SC2003,SC2004,SC2005,\
-SC2009,SC2010,SC2012,SC2013,SC2015,SC2016,SC2018,SC2019,SC2022,SC2026,\
-SC2027,SC2030,SC2031,SC2034,SC2035,SC2039,SC2043,SC2044,SC2045,SC2046,SC2048,\
-SC2059,SC2068,SC2074,SC2086,SC2088,SC2089,SC2090,SC2091,SC2094,\
-SC2097,SC2098,SC2103,SC2115,SC2116,SC2119,SC2120,SC2121,SC2124,SC2126,SC2128,\
-SC2129,SC2140,SC2142,SC2143,SC2145,SC2146,SC2148,SC2152,SC2153,SC2154,SC2155,\
-SC2162,SC2164,SC2165,SC2166,SC2167,SC2174,SC2178,SC2181,SC2191,SC2192,SC2195,\
-SC2199,SC2206,SC2207,SC2209,SC2214,SC2219,SC2220,SC2223,SC2230,SC2231,SC2235"
+	# This SHCK_EXCLUDE list is out "to do" and we work to fix all of this errors.
+	SHCK_EXCLUDE="SC1083,SC2002,SC2004,\
+SC2010,SC2012,SC2016,SC2034,SC2045,SC2046,SC2068,SC2086,SC2089,SC2090,\
+SC2097,SC2098,SC2119,SC2120,SC2121,SC2124,SC2126,SC2128,\
+SC2129,SC2140,SC2142,SC2143,SC2148,SC2152,SC2153,SC2154,SC2155,\
+SC2162"
 	# SPDK fails some error checks which have been deprecated in later versions of shellcheck.
 	# We will not try to fix these error checks, but instead just leave the error types here
 	# so that we can still run with older versions of shellcheck.
 	SHCK_EXCLUDE="$SHCK_EXCLUDE,SC1117"
+	# SPDK has decided to not fix violations of these errors.
+	# We are aware about below exclude list and we want this errors to be excluded.
+	# SC1090: Can't follow non-constant source. Use a directive to specify location.
+	# SC1091: Not following: (error message here)
+	# SC2001: See if you can use ${variable//search/replace} instead.
+	# SC2164: Use cd ... || exit in case cd fails.
+	# SC2174: When used with -p, -m only applies to the deepest directory.
+	# SC2206: Quote to prevent word splitting/globbing,
+	#         or split robustly with mapfile or read -a.
+	# SC2207: Prefer mapfile or read -a to split command output (or quote to avoid splitting).
+	# SC2223: This default assignment may cause DoS due to globbing. Quote it.
+	SHCK_EXCLUDE="$SHCK_EXCLUDE,SC1090,SC1091,SC2164,SC2174,SC2001,SC2206,SC2207,SC2223"
 
 	SHCK_FORMAT="diff"
 	SHCK_APPLY=true

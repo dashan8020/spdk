@@ -39,6 +39,7 @@
 #include "spdk/stdinc.h"
 #include "spdk/env.h"
 #include "spdk/likely.h"
+#include "spdk/string.h"
 #include "nvme_internal.h"
 #include "nvme_uevent.h"
 
@@ -100,9 +101,6 @@ struct nvme_pcie_ctrlr {
 
 	/* Opaque handle to associated PCI device. */
 	struct spdk_pci_device *devhandle;
-
-	/* File descriptor returned from spdk_pci_device_claim().  Closed when ctrlr is detached. */
-	int claim_fd;
 
 	/* Flag to indicate the MMIO register has been remapped */
 	bool is_remapped;
@@ -301,9 +299,9 @@ _nvme_pcie_hotplug_monitor(struct spdk_nvme_probe_ctx *probe_ctx)
 				nvme_ctrlr_fail(ctrlr, true);
 
 				/* get the user app to clean up and stop I/O */
-				if (probe_ctx->remove_cb) {
+				if (ctrlr->remove_cb) {
 					nvme_robust_mutex_unlock(&g_spdk_nvme_driver->lock);
-					probe_ctx->remove_cb(probe_ctx->cb_ctx, ctrlr);
+					ctrlr->remove_cb(probe_ctx->cb_ctx, ctrlr);
 					nvme_robust_mutex_lock(&g_spdk_nvme_driver->lock);
 				}
 			}
@@ -333,9 +331,9 @@ _nvme_pcie_hotplug_monitor(struct spdk_nvme_probe_ctx *probe_ctx)
 
 		if (do_remove) {
 			nvme_ctrlr_fail(ctrlr, true);
-			if (probe_ctx->remove_cb) {
+			if (ctrlr->remove_cb) {
 				nvme_robust_mutex_unlock(&g_spdk_nvme_driver->lock);
-				probe_ctx->remove_cb(probe_ctx->cb_ctx, ctrlr);
+				ctrlr->remove_cb(probe_ctx->cb_ctx, ctrlr);
 				nvme_robust_mutex_lock(&g_spdk_nvme_driver->lock);
 			}
 		}
@@ -641,8 +639,7 @@ nvme_pcie_ctrlr_free_cmb_io_buffer(struct spdk_nvme_ctrlr *ctrlr, void *buf, siz
 	 * Do nothing for now.
 	 * TODO: Track free space so buffers may be reused.
 	 */
-	SPDK_ERRLOG("%s: no deallocation for CMB buffers yet!\n",
-		    __func__);
+	SPDK_ERRLOG("no deallocation for CMB buffers yet!\n");
 	return 0;
 }
 
@@ -808,25 +805,20 @@ struct spdk_nvme_ctrlr *nvme_pcie_ctrlr_construct(const struct spdk_nvme_transpo
 	union spdk_nvme_cap_register cap;
 	union spdk_nvme_vs_register vs;
 	uint32_t cmd_reg;
-	int rc, claim_fd;
+	int rc;
 	struct spdk_pci_id pci_id;
-	struct spdk_pci_addr pci_addr;
 
-	if (spdk_pci_addr_parse(&pci_addr, trid->traddr)) {
-		SPDK_ERRLOG("could not parse pci address\n");
-		return NULL;
-	}
-
-	claim_fd = spdk_pci_device_claim(&pci_addr);
-	if (claim_fd < 0) {
-		SPDK_ERRLOG("could not claim device %s\n", trid->traddr);
+	rc = spdk_pci_device_claim(pci_dev);
+	if (rc < 0) {
+		SPDK_ERRLOG("could not claim device %s (%s)\n",
+			    trid->traddr, spdk_strerror(-rc));
 		return NULL;
 	}
 
 	pctrlr = spdk_zmalloc(sizeof(struct nvme_pcie_ctrlr), 64, NULL,
 			      SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_SHARE);
 	if (pctrlr == NULL) {
-		close(claim_fd);
+		spdk_pci_device_unclaim(pci_dev);
 		SPDK_ERRLOG("could not allocate ctrlr\n");
 		return NULL;
 	}
@@ -836,12 +828,18 @@ struct spdk_nvme_ctrlr *nvme_pcie_ctrlr_construct(const struct spdk_nvme_transpo
 	pctrlr->ctrlr.trid.trtype = SPDK_NVME_TRANSPORT_PCIE;
 	pctrlr->devhandle = devhandle;
 	pctrlr->ctrlr.opts = *opts;
-	pctrlr->claim_fd = claim_fd;
 	memcpy(&pctrlr->ctrlr.trid, trid, sizeof(pctrlr->ctrlr.trid));
+
+	rc = nvme_ctrlr_construct(&pctrlr->ctrlr);
+	if (rc != 0) {
+		spdk_pci_device_unclaim(pci_dev);
+		spdk_free(pctrlr);
+		return NULL;
+	}
 
 	rc = nvme_pcie_ctrlr_allocate_bars(pctrlr);
 	if (rc != 0) {
-		close(claim_fd);
+		spdk_pci_device_unclaim(pci_dev);
 		spdk_free(pctrlr);
 		return NULL;
 	}
@@ -853,14 +851,14 @@ struct spdk_nvme_ctrlr *nvme_pcie_ctrlr_construct(const struct spdk_nvme_transpo
 
 	if (nvme_ctrlr_get_cap(&pctrlr->ctrlr, &cap)) {
 		SPDK_ERRLOG("get_cap() failed\n");
-		close(claim_fd);
+		spdk_pci_device_unclaim(pci_dev);
 		spdk_free(pctrlr);
 		return NULL;
 	}
 
 	if (nvme_ctrlr_get_vs(&pctrlr->ctrlr, &vs)) {
 		SPDK_ERRLOG("get_vs() failed\n");
-		close(claim_fd);
+		spdk_pci_device_unclaim(pci_dev);
 		spdk_free(pctrlr);
 		return NULL;
 	}
@@ -870,12 +868,6 @@ struct spdk_nvme_ctrlr *nvme_pcie_ctrlr_construct(const struct spdk_nvme_transpo
 	/* Doorbell stride is 2 ^ (dstrd + 2),
 	 * but we want multiples of 4, so drop the + 2 */
 	pctrlr->doorbell_stride_u32 = 1 << cap.bits.dstrd;
-
-	rc = nvme_ctrlr_construct(&pctrlr->ctrlr);
-	if (rc != 0) {
-		nvme_ctrlr_destruct(&pctrlr->ctrlr);
-		return NULL;
-	}
 
 	pci_id = spdk_pci_device_get_id(pci_dev);
 	pctrlr->ctrlr.quirks = nvme_get_quirks(&pci_id);
@@ -937,8 +929,6 @@ nvme_pcie_ctrlr_destruct(struct spdk_nvme_ctrlr *ctrlr)
 	struct nvme_pcie_ctrlr *pctrlr = nvme_pcie_ctrlr(ctrlr);
 	struct spdk_pci_device *devhandle = nvme_ctrlr_proc_get_devhandle(ctrlr);
 
-	close(pctrlr->claim_fd);
-
 	if (ctrlr->adminq) {
 		nvme_pcie_qpair_destroy(ctrlr->adminq);
 	}
@@ -950,6 +940,7 @@ nvme_pcie_ctrlr_destruct(struct spdk_nvme_ctrlr *ctrlr)
 	nvme_pcie_ctrlr_free_bars(pctrlr);
 
 	if (devhandle) {
+		spdk_pci_device_unclaim(devhandle);
 		spdk_pci_device_detach(devhandle);
 	}
 
@@ -1230,6 +1221,12 @@ nvme_pcie_qpair_update_mmio_required(struct spdk_nvme_qpair *qpair, uint16_t val
 	old = *shadow_db;
 	*shadow_db = value;
 
+	/*
+	 * Ensure that the doorbell is updated before reading the EventIdx from
+	 * memory
+	 */
+	spdk_mb();
+
 	if (!nvme_pcie_qpair_need_event(*eventidx, value, old)) {
 		return false;
 	}
@@ -1349,18 +1346,6 @@ nvme_pcie_qpair_complete_tracker(struct spdk_nvme_qpair *qpair, struct nvme_trac
 
 		TAILQ_REMOVE(&pqpair->outstanding_tr, tr, tq_list);
 		TAILQ_INSERT_HEAD(&pqpair->free_tr, tr, tq_list);
-
-		/*
-		 * If the controller is in the middle of resetting, don't
-		 *  try to submit queued requests here - let the reset logic
-		 *  handle that instead.
-		 */
-		if (!STAILQ_EMPTY(&qpair->queued_req) &&
-		    !qpair->ctrlr->is_resetting) {
-			req = STAILQ_FIRST(&qpair->queued_req);
-			STAILQ_REMOVE_HEAD(&qpair->queued_req, stailq);
-			nvme_qpair_submit_request(qpair, req);
-		}
 	}
 }
 
@@ -1650,7 +1635,7 @@ nvme_pcie_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr, uint16_t qid,
 		return NULL;
 	}
 
-	rc = _nvme_pcie_ctrlr_create_io_qpair(ctrlr, qpair, qid);
+	rc = nvme_transport_ctrlr_connect_qpair(ctrlr, qpair);
 
 	if (rc != 0) {
 		SPDK_ERRLOG("I/O queue creation failed\n");
@@ -1987,12 +1972,8 @@ nvme_pcie_qpair_submit_request(struct spdk_nvme_qpair *qpair, struct nvme_reques
 	tr = TAILQ_FIRST(&pqpair->free_tr);
 
 	if (tr == NULL) {
-		/*
-		 * Put the request on the qpair's request queue to be
-		 *  processed when a tracker frees up via a command
-		 *  completion.
-		 */
-		STAILQ_INSERT_TAIL(&qpair->queued_req, req, stailq);
+		/* Inform the upper layer to try again later. */
+		rc = -EAGAIN;
 		goto exit;
 	}
 

@@ -36,6 +36,7 @@
 
 #include "spdk/nvme.h"
 #include "spdk/bdev_module.h"
+#include "spdk/opal.h"
 
 TAILQ_HEAD(nvme_bdev_ctrlrs, nvme_bdev_ctrlr);
 extern struct nvme_bdev_ctrlrs g_nvme_bdev_ctrlrs;
@@ -56,13 +57,16 @@ struct nvme_bdev_ctrlr {
 	bool				destruct;
 	/**
 	 * PI check flags. This flags is set to NVMe controllers created only
-	 * through construct_nvme_bdev RPC or .INI config file. Hot added
+	 * through bdev_nvme_attach_controller RPC or .INI config file. Hot added
 	 * NVMe controllers are not included.
 	 */
 	uint32_t			prchk_flags;
 	uint32_t			num_ns;
 	/** Array of bdevs indexed by nsid - 1 */
 	struct nvme_bdev		*bdevs;
+
+	struct spdk_opal_dev		*opal_dev;
+	struct spdk_poller		*opal_poller;
 
 	struct spdk_poller		*adminq_timer_poller;
 
@@ -76,6 +80,21 @@ struct nvme_bdev {
 	uint32_t		id;
 	bool			active;
 	struct spdk_nvme_ns	*ns;
+};
+
+typedef void (*spdk_bdev_create_nvme_fn)(void *ctx, size_t bdev_count, int rc);
+
+struct nvme_async_probe_ctx {
+	struct spdk_nvme_probe_ctx *probe_ctx;
+	const char *base_name;
+	const char **names;
+	uint32_t count;
+	uint32_t prchk_flags;
+	struct spdk_poller *poller;
+	struct spdk_nvme_transport_id trid;
+	struct spdk_nvme_ctrlr_opts opts;
+	spdk_bdev_create_nvme_fn cb_fn;
+	void *cb_ctx;
 };
 
 struct nvme_bdev_ctrlr *nvme_bdev_ctrlr_get(const struct spdk_nvme_transport_id *trid);

@@ -25,7 +25,7 @@ if (( SPDK_TEST_BLOCKDEV + \
 	exit 0
 fi
 
-declare -A app_pid=([target]= [initiator]=)
+declare -A app_pid=([target]="" [initiator]="")
 declare -A app_socket=([target]='/var/tmp/spdk_tgt.sock' [initiator]='/var/tmp/spdk_initiator.sock')
 declare -A app_params=([target]='-m 0x1 -s 1024' [initiator]='-m 0x2 -g -u -s 1024')
 declare -A configs_path=([target]="$rootdir/spdk_tgt_config.json" [initiator]="$rootdir/spdk_initiator_config.json")
@@ -45,13 +45,11 @@ function tgt_check_notification_types() {
 	timing_enter $FUNCNAME
 
 	local ret=0
-	local enabled_types="
-		bdev_register
-		bdev_unregister
-	"
+	local enabled_types="bdev_register
+		bdev_unregister	"
 
-	get_types=$(tgt_rpc get_notification_types | jq -r '.[]')
-	if [ "$(echo $enabled_types)" != "$(echo $get_types)" ]; then
+	get_types=$(tgt_rpc notify_get_types | jq -r '.[]')
+	if [ $enabled_types != $get_types ]; then
 		echo "ERROR: expected types:" $enabled_types ", but got:" $get_types
 		ret=1
 	fi
@@ -87,7 +85,7 @@ function tgt_check_notifications() {
                 fi
 
                 shift
-        done < <(tgt_rpc get_notifications -i ${last_event_id} | jq -r '.[] | "\(.type):\(.ctx):\(.id)"')
+        done < <(tgt_rpc notify_get_notifications -i ${last_event_id} | jq -r '.[] | "\(.type):\(.ctx):\(.id)"')
 
         $rc
 
@@ -129,7 +127,7 @@ function json_config_test_shutdown_app() {
 	[[ -n "${#app_socket[$app]}" ]]
 	[[ -n "${app_pid[$app]}" ]]
 
-	# kill_instance RPC will trigger ASAN
+	# spdk_kill_instance RPC will trigger ASAN
 	kill -SIGINT ${app_pid[$app]}
 
 	for (( i=0; i<30; i++ )); do
@@ -166,10 +164,10 @@ function create_bdev_subsystem_config() {
 			fi
 		fi
 
-		tgt_rpc construct_split_vbdev $lvol_store_base_bdev 2
-		tgt_rpc construct_split_vbdev Malloc0 3
+		tgt_rpc bdev_split_create $lvol_store_base_bdev 2
+		tgt_rpc bdev_split_create Malloc0 3
 		tgt_rpc bdev_malloc_create 8 4096 --name Malloc3
-		tgt_rpc construct_passthru_bdev -b Malloc3 -p PTBdevFromMalloc3
+		tgt_rpc bdev_passthru_create -b Malloc3 -p PTBdevFromMalloc3
 
 		tgt_rpc bdev_null_create Null0 32 512
 
@@ -200,10 +198,10 @@ function create_bdev_subsystem_config() {
 		# For LVOLs use split to check for proper order of initialization.
 		# If LVOLs cofniguration will be reordered (eg moved before splits or AIO/NVMe)
 		# it should fail loading JSON config from file.
-		tgt_rpc construct_lvol_store -c 1048576 ${lvol_store_base_bdev}p0 lvs_test
-		tgt_rpc construct_lvol_bdev -l lvs_test lvol0 32
-		tgt_rpc construct_lvol_bdev -l lvs_test -t lvol1 32
-		tgt_rpc snapshot_lvol_bdev     lvs_test/lvol0 snapshot0
+		tgt_rpc bdev_lvol_create_lvstore -c 1048576 ${lvol_store_base_bdev}p0 lvs_test
+		tgt_rpc bdev_lvol_create -l lvs_test lvol0 32
+		tgt_rpc bdev_lvol_create -l lvs_test -t lvol1 32
+		tgt_rpc bdev_lvol_snapshot     lvs_test/lvol0 snapshot0
 		tgt_rpc bdev_lvol_clone        lvs_test/snapshot0 clone0
 
 		expected_notifications+=(
@@ -233,13 +231,13 @@ function create_bdev_subsystem_config() {
 		pmem_pool_file=$(mktemp /tmp/pool_file1.XXXXX)
 		rm -f $pmem_pool_file
 		tgt_rpc create_pmem_pool $pmem_pool_file 128 4096
-		tgt_rpc construct_pmem_bdev -n pmem1 $pmem_pool_file
+		tgt_rpc bdev_pmem_create -n pmem1 $pmem_pool_file
 		expected_notifications+=( bdev_register:pmem1 )
 	fi
 
 	if [[ $SPDK_TEST_RBD -eq 1 ]]; then
 		rbd_setup 127.0.0.1
-		tgt_rpc construct_rbd_bdev $RBD_POOL $RBD_NAME 4096
+		tgt_rpc bdev_rbd_create $RBD_POOL $RBD_NAME 4096
 		expected_notifications+=( bdev_register:Ceph0 )
 	fi
 
@@ -252,10 +250,10 @@ function cleanup_bdev_subsystem_config() {
 	timing_enter $FUNCNAME
 
 	if [[ $SPDK_TEST_BLOCKDEV -eq 1 ]]; then
-		tgt_rpc destroy_lvol_bdev     lvs_test/clone0
-		tgt_rpc destroy_lvol_bdev     lvs_test/lvol0
-		tgt_rpc destroy_lvol_bdev     lvs_test/snapshot0
-		tgt_rpc destroy_lvol_store -l lvs_test
+		tgt_rpc bdev_lvol_delete     lvs_test/clone0
+		tgt_rpc bdev_lvol_delete     lvs_test/lvol0
+		tgt_rpc bdev_lvol_delete     lvs_test/snapshot0
+		tgt_rpc bdev_lvol_delete_lvstore -l lvs_test
 	fi
 
 	if [[ $(uname -s) = Linux ]]; then
@@ -263,8 +261,8 @@ function cleanup_bdev_subsystem_config() {
 	fi
 
 	if [[ $SPDK_TEST_PMDK -eq 1 && -n "$pmem_pool_file" && -f "$pmem_pool_file" ]]; then
-		tgt_rpc delete_pmem_bdev pmem1
-		tgt_rpc delete_pmem_pool $pmem_pool_file
+		tgt_rpc bdev_pmem_delete pmem1
+		tgt_rpc bdev_pmem_delete_pool $pmem_pool_file
 		rm -f $pmem_pool_file
 	fi
 
@@ -279,18 +277,18 @@ function create_vhost_subsystem_config() {
 	timing_enter $FUNCNAME
 
 	tgt_rpc bdev_malloc_create 64 1024 --name MallocForVhost0
-	tgt_rpc construct_split_vbdev MallocForVhost0 8
+	tgt_rpc bdev_split_create MallocForVhost0 8
 
-	tgt_rpc construct_vhost_scsi_controller   VhostScsiCtrlr0
-	tgt_rpc add_vhost_scsi_lun                VhostScsiCtrlr0 0 MallocForVhost0p3
-	tgt_rpc add_vhost_scsi_lun                VhostScsiCtrlr0 -1 MallocForVhost0p4
-	tgt_rpc set_vhost_controller_coalescing   VhostScsiCtrlr0 1 100
+	tgt_rpc vhost_create_scsi_controller      VhostScsiCtrlr0
+	tgt_rpc vhost_scsi_controller_add_target  VhostScsiCtrlr0 0 MallocForVhost0p3
+	tgt_rpc vhost_scsi_controller_add_target  VhostScsiCtrlr0 -1 MallocForVhost0p4
+	tgt_rpc vhost_controller_set_coalescing   VhostScsiCtrlr0 1 100
 
-	tgt_rpc construct_vhost_blk_controller    VhostBlkCtrlr0 MallocForVhost0p5
+	tgt_rpc vhost_create_blk_controller    VhostBlkCtrlr0 MallocForVhost0p5
 
 # FIXME: enable after vhost-nvme is properly implemented against the latest rte_vhost (DPDK 19.05+)
-#	tgt_rpc construct_vhost_nvme_controller   VhostNvmeCtrlr0 16
-#	tgt_rpc add_vhost_nvme_ns                 VhostNvmeCtrlr0 MallocForVhost0p6
+#	tgt_rpc vhost_create_nvme_controller   VhostNvmeCtrlr0 16
+#	tgt_rpc vhost_nvme_controller_add_ns                 VhostNvmeCtrlr0 MallocForVhost0p6
 
 	timing_exit $FUNCNAME
 }
@@ -298,9 +296,9 @@ function create_vhost_subsystem_config() {
 function create_iscsi_subsystem_config() {
 	timing_enter $FUNCNAME
 	tgt_rpc bdev_malloc_create 64 1024 --name MallocForIscsi0
-	tgt_rpc add_portal_group $PORTAL_TAG 127.0.0.1:$ISCSI_PORT
-	tgt_rpc add_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
-	tgt_rpc construct_target_node Target3 Target3_alias 'MallocForIscsi0:0' $PORTAL_TAG:$INITIATOR_TAG 64 -d
+	tgt_rpc iscsi_create_portal_group $PORTAL_TAG 127.0.0.1:$ISCSI_PORT
+	tgt_rpc iscsi_create_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
+	tgt_rpc iscsi_create_target_node Target3 Target3_alias 'MallocForIscsi0:0' $PORTAL_TAG:$INITIATOR_TAG 64 -d
 	timing_exit $FUNCNAME
 }
 
@@ -318,7 +316,7 @@ function create_nvmf_subsystem_config() {
 	tgt_rpc bdev_malloc_create 4 1024 --name MallocForNvmf1
 
 	tgt_rpc nvmf_create_transport -t RDMA -u 8192 -c 0
-	tgt_rpc nvmf_subsystem_create       nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
+	tgt_rpc nvmf_create_subsystem       nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
 	tgt_rpc nvmf_subsystem_add_ns       nqn.2016-06.io.spdk:cnode1 MallocForNvmf0
 	tgt_rpc nvmf_subsystem_add_ns       nqn.2016-06.io.spdk:cnode1 MallocForNvmf1
 	tgt_rpc nvmf_subsystem_add_listener nqn.2016-06.io.spdk:cnode1 -t RDMA -a $NVMF_FIRST_TARGET_IP -s "$NVMF_PORT"
@@ -328,9 +326,9 @@ function create_nvmf_subsystem_config() {
 
 function create_virtio_initiator_config() {
 	timing_enter $FUNCNAME
-	initiator_rpc construct_virtio_dev -t user -a /var/tmp/VhostScsiCtrlr0 -d scsi VirtioScsiCtrlr0
-	initiator_rpc construct_virtio_dev -t user -a /var/tmp/VhostBlkCtrlr0  -d blk  VirtioBlk0
-	# TODO: initiator_rpc construct_virtio_dev -t user -a /var/tmp/VhostNvmeCtrlr0 -d nvme VirtioNvme0
+	initiator_rpc bdev_virtio_attach_controller -t user -a /var/tmp/VhostScsiCtrlr0 -d scsi VirtioScsiCtrlr0
+	initiator_rpc bdev_virtio_attach_controller -t user -a /var/tmp/VhostBlkCtrlr0  -d blk  VirtioBlk0
+	# TODO: initiator_rpc bdev_virtio_attach_controller -t user -a /var/tmp/VhostNvmeCtrlr0 -d nvme VirtioNvme0
 	timing_exit $FUNCNAME
 }
 
@@ -344,10 +342,10 @@ function json_config_test_init()
 
 	#TODO: global subsystem params
 
-	# Load nvme configuration. The load_config will issue start_subsystem_init automatically
+	# Load nvme configuration. The load_config will issue framework_start_init automatically
 	(
 		echo '{"subsystems": [';
-		$rootdir/scripts/gen_nvme.sh --json
+		$rootdir/scripts/gen_nvme.sh --json | jq -r "del(.config[] | select(.params.name!=\"Nvme0\"))"
 		echo ']}'
 	) | tgt_rpc load_config
 
@@ -385,11 +383,7 @@ function json_config_test_fini() {
 	local ret=0
 
 	if [[ -n "${app_pid[initiator]}" ]]; then
-		if ! json_config_test_shutdown_app initiator; then
-			kill -9 ${app_pid[initiator]}
-			app_pid[initiator]=
-			ret=1
-		fi
+		killprocess ${app_pid[initiator]}
 	fi
 
 	if [[ -n "${app_pid[target]}" ]]; then
@@ -398,12 +392,7 @@ function json_config_test_fini() {
 		cleanup_bdev_subsystem_config
 
 		# SPDK_TEST_NVMF: Should we clear something?
-
-		if ! json_config_test_shutdown_app target; then
-			kill -9 ${app_pid[target]}
-			app_pid[target]=
-			ret=1
-		fi
+		killprocess ${app_pid[target]}
 	fi
 
 	rm -f "${configs_path[@]}"
@@ -476,7 +465,7 @@ fi
 
 echo "INFO: changing configuration and checking if this can be detected..."
 # Self test to check if configuration diff can be detected.
-tgt_rpc delete_malloc_bdev MallocBdevForConfigChangeCheck
+tgt_rpc bdev_malloc_delete MallocBdevForConfigChangeCheck
 if $rootdir/test/json_config/json_diff.sh <(tgt_rpc save_config) "${configs_path[target]}" >/dev/null; then
 	echo "ERROR: intentional configuration difference not detected!"
 	false

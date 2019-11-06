@@ -655,6 +655,7 @@ struct spdk_pci_device {
 	struct spdk_pci_addr		addr;
 	struct spdk_pci_id		id;
 	int				socket_id;
+	const char			*type;
 
 	int (*map_bar)(struct spdk_pci_device *dev, uint32_t bar,
 		       void **mapped_addr, uint64_t *phys_addr, uint64_t *size);
@@ -669,6 +670,8 @@ struct spdk_pci_device {
 	struct _spdk_pci_device_internal {
 		struct spdk_pci_driver		*driver;
 		bool				attached;
+		/* optional fd for exclusive access to this device on this process */
+		int				claim_fd;
 		bool				pending_removal;
 		/* The device was successfully removed on a DPDK interrupt thread,
 		 * but to prevent data races we couldn't remove it from the global
@@ -895,13 +898,23 @@ int spdk_pci_device_get_serial_number(struct spdk_pci_device *dev, char *sn, siz
  * As long as this file remains open with the lock acquired, other processes will
  * not be able to successfully call this function on the same PCI device.
  *
- * \param pci_addr PCI address of the device to claim
+ * The device can be un-claimed by the owning process with spdk_pci_device_unclaim().
+ * It will be also unclaimed automatically when detached.
  *
- * \return -1 if the device has already been claimed, an fd otherwise. This fd
- * should be closed when the application no longer needs access to the PCI device
- * (including when it is hot removed).
+ * \param dev PCI device to claim.
+ *
+ * \return -EACCES if the device has already been claimed,
+ *	   negative errno on unexpected errors,
+ *	   0 on success.
  */
-int spdk_pci_device_claim(const struct spdk_pci_addr *pci_addr);
+int spdk_pci_device_claim(struct spdk_pci_device *dev);
+
+/**
+ * Undo spdk_pci_device_claim().
+ *
+ * \param dev PCI device to unclaim.
+ */
+void spdk_pci_device_unclaim(struct spdk_pci_device *dev);
 
 /**
  * Release all resources associated with the given device and detach it. As long
@@ -1088,6 +1101,15 @@ void spdk_pci_hook_device(struct spdk_pci_driver *drv, struct spdk_pci_device *d
  * \param dev fully initialized PCI device struct
  */
 void spdk_pci_unhook_device(struct spdk_pci_device *dev);
+
+/**
+ * Return the type of the PCI device.
+ *
+ * \param dev PCI device
+ *
+ * \return string representing the type of the device
+ */
+const char *spdk_pci_device_get_type(const struct spdk_pci_device *dev);
 
 /**
  * Remove any CPU affinity from the current thread.

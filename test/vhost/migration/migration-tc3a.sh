@@ -84,8 +84,8 @@ function host1_cleanup_vhost()
 	vm_kill $incoming_vm
 
 	notice "Removing bdev & controller from vhost on local server"
-	$rpc_0 delete_nvme_controller Nvme0
-	$rpc_0 remove_vhost_controller $incoming_vm_ctrlr
+	$rpc_0 bdev_nvme_detach_controller Nvme0
+	$rpc_0 vhost_delete_controller $incoming_vm_ctrlr
 
 	notice "Shutting down vhost app"
 	vhost_kill 0
@@ -100,18 +100,18 @@ function host1_start_nvmf()
 
 	notice "Starting nvmf_tgt instance on local server"
 	mkdir -p $nvmf_dir
-	rm -rf $nvmf_dir/*
+	rm -rf "${nvmf_dir:?}/"*
 
 	trap 'host1_cleanup_nvmf SIGKILL; error_exit "${FUNCNAME}" "${LINENO}"' INT ERR EXIT
 	$rootdir/app/nvmf_tgt/nvmf_tgt -s 512 -m 0xF -r $nvmf_dir/nvmf_rpc.sock --wait-for-rpc &
 	nvmf_tgt_pid=$!
 	echo $nvmf_tgt_pid > $nvmf_dir/nvmf_tgt.pid
 	waitforlisten "$nvmf_tgt_pid" "$nvmf_dir/nvmf_rpc.sock"
-	$rpc_nvmf start_subsystem_init
+	$rpc_nvmf framework_start_init
 	$rpc_nvmf nvmf_create_transport -t RDMA -u 8192
 	$rootdir/scripts/gen_nvme.sh --json | $rpc_nvmf load_subsystem_config
 
-	$rpc_nvmf nvmf_subsystem_create nqn.2018-02.io.spdk:cnode1 -a -s SPDK01
+	$rpc_nvmf nvmf_create_subsystem nqn.2018-02.io.spdk:cnode1 -a -s SPDK01
 	$rpc_nvmf nvmf_subsystem_add_ns nqn.2018-02.io.spdk:cnode1 Nvme0n1
 	$rpc_nvmf nvmf_subsystem_add_listener nqn.2018-02.io.spdk:cnode1 -t rdma -a $RDMA_TARGET_IP -s 4420
 }
@@ -123,9 +123,9 @@ function host1_start_vhost()
 	notice "Starting vhost0 instance on local server"
 	trap 'host1_cleanup_vhost; error_exit "${FUNCNAME}" "${LINENO}"' INT ERR EXIT
 	vhost_run 0 "-u"
-	$rpc_0 construct_nvme_bdev -b Nvme0 -t rdma -f ipv4 -a $RDMA_TARGET_IP -s 4420 -n "nqn.2018-02.io.spdk:cnode1"
-	$rpc_0 construct_vhost_scsi_controller $incoming_vm_ctrlr
-	$rpc_0 add_vhost_scsi_lun $incoming_vm_ctrlr 0 Nvme0n1
+	$rpc_0 bdev_nvme_attach_controller -b Nvme0 -t rdma -f ipv4 -a $RDMA_TARGET_IP -s 4420 -n "nqn.2018-02.io.spdk:cnode1"
+	$rpc_0 vhost_create_scsi_controller $incoming_vm_ctrlr
+	$rpc_0 vhost_scsi_controller_add_target $incoming_vm_ctrlr 0 Nvme0n1
 
 	vm_setup --os="$share_dir/migration.qcow2" --force=$incoming_vm --disk-type=spdk_vhost_scsi --disks=VhostScsi0 \
 		--migrate-to=$target_vm --memory=512 --queue_num=1

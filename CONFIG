@@ -94,6 +94,9 @@ CONFIG_FIO_SOURCE_DIR=/usr/src/fio
 CONFIG_RDMA=n
 CONFIG_RDMA_SEND_WITH_INVAL=n
 
+# Enable NVMe Character Devices.
+CONFIG_NVME_CUSE=n
+
 # Enable FC support for the NVMf target.
 # Requires FC low level driver (from FC vendor)
 CONFIG_FC=n
@@ -153,3 +156,6 @@ CONFIG_URING=n
 
 # Path to custom built IO_URING library
 CONFIG_URING_PATH=
+
+# Build with FUSE support
+CONFIG_FUSE=n

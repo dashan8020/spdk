@@ -97,9 +97,6 @@ spdk_scsi_dev_get_name(const struct spdk_scsi_dev *dev)
 	return NULL;
 }
 
-DEFINE_STUB(spdk_event_allocate, struct spdk_event *,
-	    (uint32_t core, spdk_event_fn fn, void *arg1, void *arg2), NULL);
-
 DEFINE_STUB(spdk_scsi_dev_construct, struct spdk_scsi_dev *,
 	    (const char *name, const char **bdev_name_list,
 	     int *lun_id_list, int num_luns, uint8_t protocol_id,
@@ -122,7 +119,7 @@ DEFINE_STUB(spdk_scsi_dev_delete_port, int,
 
 DEFINE_STUB_V(spdk_shutdown_iscsi_conns, (void));
 
-DEFINE_STUB_V(spdk_iscsi_conns_start_exit, (struct spdk_iscsi_tgt_node *target));
+DEFINE_STUB_V(spdk_iscsi_conns_request_logout, (struct spdk_iscsi_tgt_node *target));
 
 DEFINE_STUB(spdk_iscsi_get_active_conns, int, (struct spdk_iscsi_tgt_node *target), 0);
 

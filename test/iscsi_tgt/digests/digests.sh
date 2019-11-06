@@ -74,20 +74,20 @@ echo "Process pid: $pid"
 trap 'killprocess $pid; iscsitestfini $1 $2; exit 1' SIGINT SIGTERM EXIT
 
 waitforlisten $pid
-$rpc_py set_iscsi_options -o 30 -a 16
-$rpc_py start_subsystem_init
+$rpc_py iscsi_set_options -o 30 -a 16
+$rpc_py framework_start_init
 echo "iscsi_tgt is listening. Running tests..."
 
 timing_exit start_iscsi_tgt
 
-$rpc_py add_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT
-$rpc_py add_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
+$rpc_py iscsi_create_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT
+$rpc_py iscsi_create_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
 $rpc_py bdev_malloc_create $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE
 # "Malloc0:0" ==> use Malloc0 blockdev for LUN0
 # "1:2" ==> map PortalGroup1 to InitiatorGroup2
 # "64" ==> iSCSI queue depth 64
 # "-d" ==> disable CHAP authentication
-$rpc_py construct_target_node Target3 Target3_alias 'Malloc0:0' $PORTAL_TAG:$INITIATOR_TAG 64 -d
+$rpc_py iscsi_create_target_node Target3 Target3_alias 'Malloc0:0' $PORTAL_TAG:$INITIATOR_TAG 64 -d
 sleep 1
 
 iscsiadm -m discovery -t sendtargets -p $TARGET_IP:$ISCSI_PORT

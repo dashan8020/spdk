@@ -45,6 +45,8 @@
 
 #define MAX_TMPBUF 1024
 #define PORTNUMLEN 32
+#define SO_RCVBUF_SIZE (2 * 1024 * 1024)
+#define SO_SNDBUF_SIZE (2 * 1024 * 1024)
 
 struct spdk_posix_sock {
 	struct spdk_sock	base;
@@ -163,6 +165,73 @@ enum spdk_posix_sock_create_type {
 	SPDK_SOCK_CREATE_LISTEN,
 	SPDK_SOCK_CREATE_CONNECT,
 };
+
+static int
+spdk_posix_sock_set_recvbuf(struct spdk_sock *_sock, int sz)
+{
+	struct spdk_posix_sock *sock = __posix_sock(_sock);
+	int rc;
+
+	assert(sock != NULL);
+
+	if (sz < SO_RCVBUF_SIZE) {
+		sz = SO_RCVBUF_SIZE;
+	}
+
+	rc = setsockopt(sock->fd, SOL_SOCKET, SO_RCVBUF, &sz, sizeof(sz));
+	if (rc < 0) {
+		return rc;
+	}
+
+	return 0;
+}
+
+static int
+spdk_posix_sock_set_sendbuf(struct spdk_sock *_sock, int sz)
+{
+	struct spdk_posix_sock *sock = __posix_sock(_sock);
+	int rc;
+
+	assert(sock != NULL);
+
+	if (sz < SO_SNDBUF_SIZE) {
+		sz = SO_SNDBUF_SIZE;
+	}
+
+	rc = setsockopt(sock->fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof(sz));
+	if (rc < 0) {
+		return rc;
+	}
+
+	return 0;
+}
+
+static struct spdk_posix_sock *
+_spdk_posix_sock_alloc(int fd)
+{
+	struct spdk_posix_sock *sock;
+	int rc;
+
+	sock = calloc(1, sizeof(*sock));
+	if (sock == NULL) {
+		SPDK_ERRLOG("sock allocation failed\n");
+		return NULL;
+	}
+
+	sock->fd = fd;
+
+	rc = spdk_posix_sock_set_recvbuf(&sock->base, SO_RCVBUF_SIZE);
+	if (rc) {
+		/* Not fatal */
+	}
+
+	rc = spdk_posix_sock_set_sendbuf(&sock->base, SO_SNDBUF_SIZE);
+	if (rc) {
+		/* Not fatal */
+	}
+
+	return sock;
+}
 
 static struct spdk_sock *
 spdk_posix_sock_create(const char *ip, int port, enum spdk_posix_sock_create_type type)
@@ -288,14 +357,13 @@ retry:
 		return NULL;
 	}
 
-	sock = calloc(1, sizeof(*sock));
+	sock = _spdk_posix_sock_alloc(fd);
 	if (sock == NULL) {
 		SPDK_ERRLOG("sock allocation failed\n");
 		close(fd);
 		return NULL;
 	}
 
-	sock->fd = fd;
 	return &sock->base;
 }
 
@@ -317,7 +385,7 @@ spdk_posix_sock_accept(struct spdk_sock *_sock)
 	struct spdk_posix_sock		*sock = __posix_sock(_sock);
 	struct sockaddr_storage		sa;
 	socklen_t			salen;
-	int				rc;
+	int				rc, fd;
 	struct spdk_posix_sock		*new_sock;
 	int				flag;
 
@@ -332,21 +400,21 @@ spdk_posix_sock_accept(struct spdk_sock *_sock)
 		return NULL;
 	}
 
-	flag = fcntl(rc, F_GETFL);
-	if ((!(flag & O_NONBLOCK)) && (fcntl(rc, F_SETFL, flag | O_NONBLOCK) < 0)) {
-		SPDK_ERRLOG("fcntl can't set nonblocking mode for socket, fd: %d (%d)\n", rc, errno);
-		close(rc);
+	fd = rc;
+
+	flag = fcntl(fd, F_GETFL);
+	if ((!(flag & O_NONBLOCK)) && (fcntl(fd, F_SETFL, flag | O_NONBLOCK) < 0)) {
+		SPDK_ERRLOG("fcntl can't set nonblocking mode for socket, fd: %d (%d)\n", fd, errno);
+		close(fd);
 		return NULL;
 	}
 
-	new_sock = calloc(1, sizeof(*sock));
+	new_sock = _spdk_posix_sock_alloc(fd);
 	if (new_sock == NULL) {
-		SPDK_ERRLOG("sock allocation failed\n");
-		close(rc);
+		close(fd);
 		return NULL;
 	}
 
-	new_sock->fd = rc;
 	return &new_sock->base;
 }
 
@@ -406,28 +474,6 @@ spdk_posix_sock_set_recvlowat(struct spdk_sock *_sock, int nbytes)
 }
 
 static int
-spdk_posix_sock_set_recvbuf(struct spdk_sock *_sock, int sz)
-{
-	struct spdk_posix_sock *sock = __posix_sock(_sock);
-
-	assert(sock != NULL);
-
-	return setsockopt(sock->fd, SOL_SOCKET, SO_RCVBUF,
-			  &sz, sizeof(sz));
-}
-
-static int
-spdk_posix_sock_set_sendbuf(struct spdk_sock *_sock, int sz)
-{
-	struct spdk_posix_sock *sock = __posix_sock(_sock);
-
-	assert(sock != NULL);
-
-	return setsockopt(sock->fd, SOL_SOCKET, SO_SNDBUF,
-			  &sz, sizeof(sz));
-}
-
-static int
 spdk_posix_sock_set_priority(struct spdk_sock *_sock, int priority)
 {
 	int rc = 0;
@@ -483,6 +529,29 @@ spdk_posix_sock_is_ipv4(struct spdk_sock *_sock)
 	}
 
 	return (sa.ss_family == AF_INET);
+}
+
+static bool
+spdk_posix_sock_is_connected(struct spdk_sock *_sock)
+{
+	struct spdk_posix_sock *sock = __posix_sock(_sock);
+	uint8_t byte;
+	int rc;
+
+	rc = recv(sock->fd, &byte, 1, MSG_PEEK);
+	if (rc == 0) {
+		return false;
+	}
+
+	if (rc < 0) {
+		if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			return true;
+		}
+
+		return false;
+	}
+
+	return true;
 }
 
 static int
@@ -619,8 +688,11 @@ static int
 spdk_posix_sock_group_impl_close(struct spdk_sock_group_impl *_group)
 {
 	struct spdk_posix_sock_group_impl *group = __posix_group_impl(_group);
+	int rc;
 
-	return close(group->fd);
+	rc = close(group->fd);
+	free(group);
+	return rc;
 }
 
 static struct spdk_net_impl g_posix_net_impl = {
@@ -639,6 +711,7 @@ static struct spdk_net_impl g_posix_net_impl = {
 	.set_priority	= spdk_posix_sock_set_priority,
 	.is_ipv6	= spdk_posix_sock_is_ipv6,
 	.is_ipv4	= spdk_posix_sock_is_ipv4,
+	.is_connected	= spdk_posix_sock_is_connected,
 	.get_placement_id	= spdk_posix_sock_get_placement_id,
 	.group_impl_create	= spdk_posix_sock_group_impl_create,
 	.group_impl_add_sock	= spdk_posix_sock_group_impl_add_sock,

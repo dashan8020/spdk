@@ -41,7 +41,8 @@ static char *cache_modes[ocf_cache_mode_max] = {
 	[ocf_cache_mode_wb] = "wb",
 	[ocf_cache_mode_wa] = "wa",
 	[ocf_cache_mode_pt] = "pt",
-	[ocf_cache_mode_wi] = "wi"
+	[ocf_cache_mode_wi] = "wi",
+	[ocf_cache_mode_wo] = "wo",
 };
 
 ocf_cache_mode_t
@@ -68,23 +69,6 @@ ocf_get_cache_modename(ocf_cache_mode_t mode)
 	}
 }
 
-static int
-mngt_poll_fn(void *opaque)
-{
-	struct vbdev_ocf *vbdev = opaque;
-
-	if (vbdev->mngt_ctx.poller_fn) {
-		if (vbdev->mngt_ctx.timeout_ts &&
-		    spdk_get_ticks() >= vbdev->mngt_ctx.timeout_ts) {
-			vbdev_ocf_mngt_continue(vbdev, -ETIMEDOUT);
-		} else {
-			vbdev->mngt_ctx.poller_fn(vbdev);
-		}
-	}
-
-	return 0;
-}
-
 int
 vbdev_ocf_mngt_start(struct vbdev_ocf *vbdev, vbdev_ocf_mngt_fn *path,
 		     vbdev_ocf_mngt_callback cb, void *cb_arg)
@@ -95,11 +79,6 @@ vbdev_ocf_mngt_start(struct vbdev_ocf *vbdev, vbdev_ocf_mngt_fn *path,
 
 	memset(&vbdev->mngt_ctx, 0, sizeof(vbdev->mngt_ctx));
 
-	vbdev->mngt_ctx.poller = spdk_poller_register(mngt_poll_fn, vbdev, 200);
-	if (vbdev->mngt_ctx.poller == NULL) {
-		return -ENOMEM;
-	}
-
 	vbdev->mngt_ctx.current_step = path;
 	vbdev->mngt_ctx.cb = cb;
 	vbdev->mngt_ctx.cb_arg = cb_arg;
@@ -109,28 +88,19 @@ vbdev_ocf_mngt_start(struct vbdev_ocf *vbdev, vbdev_ocf_mngt_fn *path,
 	return 0;
 }
 
-
-static void
-vbdev_ocf_mngt_poll_set_timeout(struct vbdev_ocf *vbdev, uint64_t millisec)
-{
-	uint64_t ticks;
-
-	ticks = millisec * spdk_get_ticks_hz() / 1000;
-	vbdev->mngt_ctx.timeout_ts = spdk_get_ticks() + ticks;
-}
-
 void
-vbdev_ocf_mngt_poll(struct vbdev_ocf *vbdev, vbdev_ocf_mngt_fn fn)
+vbdev_ocf_mngt_stop(struct vbdev_ocf *vbdev, vbdev_ocf_mngt_fn *rollback_path, int status)
 {
-	assert(vbdev->mngt_ctx.poller != NULL);
-	vbdev->mngt_ctx.poller_fn = fn;
-	vbdev_ocf_mngt_poll_set_timeout(vbdev, 5000);
-}
+	if (status) {
+		vbdev->mngt_ctx.status = status;
+	}
 
-void
-vbdev_ocf_mngt_stop(struct vbdev_ocf *vbdev)
-{
-	spdk_poller_unregister(&vbdev->mngt_ctx.poller);
+	if (vbdev->mngt_ctx.status && rollback_path) {
+		vbdev->mngt_ctx.poller_fn = NULL;
+		vbdev->mngt_ctx.current_step = rollback_path;
+		(*vbdev->mngt_ctx.current_step)(vbdev);
+		return;
+	}
 
 	if (vbdev->mngt_ctx.cb) {
 		vbdev->mngt_ctx.cb(vbdev->mngt_ctx.status, vbdev, vbdev->mngt_ctx.cb_arg);
@@ -149,7 +119,6 @@ vbdev_ocf_mngt_continue(struct vbdev_ocf *vbdev, int status)
 	assert((*vbdev->mngt_ctx.current_step) != NULL);
 
 	vbdev->mngt_ctx.status = status;
-	vbdev->mngt_ctx.poller_fn = NULL;
 
 	vbdev->mngt_ctx.current_step++;
 	if (*vbdev->mngt_ctx.current_step) {
@@ -157,5 +126,11 @@ vbdev_ocf_mngt_continue(struct vbdev_ocf *vbdev, int status)
 		return;
 	}
 
-	vbdev_ocf_mngt_stop(vbdev);
+	vbdev_ocf_mngt_stop(vbdev, NULL, 0);
+}
+
+int
+vbdev_ocf_mngt_get_status(struct vbdev_ocf *vbdev)
+{
+	return vbdev->mngt_ctx.status;
 }

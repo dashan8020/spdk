@@ -17,10 +17,10 @@ function err_clean
 	set +e
 	error "Error on $1 $2"
 	vm_kill_all
-	$rpc_py remove_vhost_scsi_target naa.vhost_vm.$vm_no 0
-	$rpc_py remove_vhost_controller naa.vhost_vm.$vm_no
-	$rpc_py destroy_lvol_bdev $lvb_u
-	$rpc_py destroy_lvol_store -u $lvs_u
+	$rpc_py vhost_scsi_controller_remove_target naa.vhost_vm.$vm_no 0
+	$rpc_py vhost_delete_controller naa.vhost_vm.$vm_no
+	$rpc_py bdev_lvol_delete $lvb_u
+	$rpc_py bdev_lvol_delete_lvstore -u $lvs_u
 	vhost_kill 0
 	exit 1
 }
@@ -66,7 +66,7 @@ timing_exit start_vhost
 
 timing_enter create_lvol
 
-nvme_bdev=$($rpc_py get_bdevs -b Nvme0n1)
+nvme_bdev=$($rpc_py bdev_get_bdevs -b Nvme0n1)
 nvme_bdev_bs=$(jq ".[] .block_size" <<< "$nvme_bdev")
 nvme_bdev_name=$(jq ".[] .name" <<< "$nvme_bdev")
 if [[ $nvme_bdev_bs != 512 ]]; then
@@ -74,8 +74,8 @@ if [[ $nvme_bdev_bs != 512 ]]; then
 	false
 fi
 
-lvs_u=$($rpc_py construct_lvol_store Nvme0n1 lvs0)
-lvb_u=$($rpc_py construct_lvol_bdev -u $lvs_u lvb0 20000)
+lvs_u=$($rpc_py bdev_lvol_create_lvstore Nvme0n1 lvs0)
+lvb_u=$($rpc_py bdev_lvol_create -u $lvs_u lvb0 20000)
 timing_exit create_lvol
 
 timing_enter convert_vm_image
@@ -90,8 +90,8 @@ timing_exit convert_vm_image
 
 trap 'err_clean "${FUNCNAME}" "${LINENO}"' ERR
 timing_enter create_vhost_controller
-$rpc_py construct_vhost_scsi_controller naa.vhost_vm.$vm_no
-$rpc_py add_vhost_scsi_lun naa.vhost_vm.$vm_no 0 $lvb_u
+$rpc_py vhost_create_scsi_controller naa.vhost_vm.$vm_no
+$rpc_py vhost_scsi_controller_add_target naa.vhost_vm.$vm_no 0 $lvb_u
 timing_exit create_vhost_controller
 
 timing_enter setup_vm
@@ -115,10 +115,10 @@ timing_exit run_vm_cmd
 vm_shutdown_all
 
 timing_enter clean_vhost
-$rpc_py remove_vhost_scsi_target naa.vhost_vm.$vm_no 0
-$rpc_py remove_vhost_controller naa.vhost_vm.$vm_no
-$rpc_py destroy_lvol_bdev $lvb_u
-$rpc_py destroy_lvol_store -u $lvs_u
+$rpc_py vhost_scsi_controller_remove_target naa.vhost_vm.$vm_no 0
+$rpc_py vhost_delete_controller naa.vhost_vm.$vm_no
+$rpc_py bdev_lvol_delete $lvb_u
+$rpc_py bdev_lvol_delete_lvstore -u $lvs_u
 vhost_kill 0
 timing_exit clean_vhost
 

@@ -1,7 +1,8 @@
 from .helpers import deprecated_alias
 
 
-def construct_lvol_store(client, bdev_name, lvs_name, cluster_sz=None, clear_method=None):
+@deprecated_alias('construct_lvol_store')
+def bdev_lvol_create_lvstore(client, bdev_name, lvs_name, cluster_sz=None, clear_method=None):
     """Construct a logical volume store.
 
     Args:
@@ -18,10 +19,11 @@ def construct_lvol_store(client, bdev_name, lvs_name, cluster_sz=None, clear_met
         params['cluster_sz'] = cluster_sz
     if clear_method:
         params['clear_method'] = clear_method
-    return client.call('construct_lvol_store', params)
+    return client.call('bdev_lvol_create_lvstore', params)
 
 
-def rename_lvol_store(client, old_name, new_name):
+@deprecated_alias('rename_lvol_store')
+def bdev_lvol_rename_lvstore(client, old_name, new_name):
     """Rename a logical volume store.
 
     Args:
@@ -32,10 +34,11 @@ def rename_lvol_store(client, old_name, new_name):
         'old_name': old_name,
         'new_name': new_name
     }
-    return client.call('rename_lvol_store', params)
+    return client.call('bdev_lvol_rename_lvstore', params)
 
 
-def construct_lvol_bdev(client, lvol_name, size, thin_provision=False, uuid=None, lvs_name=None, clear_method=None):
+@deprecated_alias('construct_lvol_bdev')
+def bdev_lvol_create(client, lvol_name, size, thin_provision=False, uuid=None, lvs_name=None, clear_method=None):
     """Create a logical volume on a logical volume store.
 
     Args:
@@ -62,10 +65,11 @@ def construct_lvol_bdev(client, lvol_name, size, thin_provision=False, uuid=None
         params['lvs_name'] = lvs_name
     if clear_method:
         params['clear_method'] = clear_method
-    return client.call('construct_lvol_bdev', params)
+    return client.call('bdev_lvol_create', params)
 
 
-def snapshot_lvol_bdev(client, lvol_name, snapshot_name):
+@deprecated_alias('snapshot_lvol_bdev')
+def bdev_lvol_snapshot(client, lvol_name, snapshot_name):
     """Capture a snapshot of the current state of a logical volume.
 
     Args:
@@ -79,7 +83,7 @@ def snapshot_lvol_bdev(client, lvol_name, snapshot_name):
         'lvol_name': lvol_name,
         'snapshot_name': snapshot_name
     }
-    return client.call('snapshot_lvol_bdev', params)
+    return client.call('bdev_lvol_snapshot', params)
 
 
 @deprecated_alias('clone_lvol_bdev')
@@ -143,7 +147,8 @@ def bdev_lvol_set_read_only(client, name):
     return client.call('bdev_lvol_set_read_only', params)
 
 
-def destroy_lvol_bdev(client, name):
+@deprecated_alias('destroy_lvol_bdev')
+def bdev_lvol_delete(client, name):
     """Destroy a logical volume.
 
     Args:
@@ -152,10 +157,11 @@ def destroy_lvol_bdev(client, name):
     params = {
         'name': name,
     }
-    return client.call('destroy_lvol_bdev', params)
+    return client.call('bdev_lvol_delete', params)
 
 
-def inflate_lvol_bdev(client, name):
+@deprecated_alias('inflate_lvol_bdev')
+def bdev_lvol_inflate(client, name):
     """Inflate a logical volume.
 
     Args:
@@ -164,10 +170,11 @@ def inflate_lvol_bdev(client, name):
     params = {
         'name': name,
     }
-    return client.call('inflate_lvol_bdev', params)
+    return client.call('bdev_lvol_inflate', params)
 
 
-def decouple_parent_lvol_bdev(client, name):
+@deprecated_alias('decouple_parent_lvol_bdev')
+def bdev_lvol_decouple_parent(client, name):
     """Decouple parent of a logical volume.
 
     Args:
@@ -176,10 +183,11 @@ def decouple_parent_lvol_bdev(client, name):
     params = {
         'name': name,
     }
-    return client.call('decouple_parent_lvol_bdev', params)
+    return client.call('bdev_lvol_decouple_parent', params)
 
 
-def destroy_lvol_store(client, uuid=None, lvs_name=None):
+@deprecated_alias('destroy_lvol_store')
+def bdev_lvol_delete_lvstore(client, uuid=None, lvs_name=None):
     """Destroy a logical volume store.
 
     Args:
@@ -196,7 +204,7 @@ def destroy_lvol_store(client, uuid=None, lvs_name=None):
         params['uuid'] = uuid
     if lvs_name:
         params['lvs_name'] = lvs_name
-    return client.call('destroy_lvol_store', params)
+    return client.call('bdev_lvol_delete_lvstore', params)
 
 
 @deprecated_alias('get_lvol_stores')

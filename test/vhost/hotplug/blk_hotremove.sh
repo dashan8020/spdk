@@ -31,11 +31,11 @@ function prepare_fio_cmd_tc1() {
     done
 }
 
-function remove_vhost_controllers() {
-    $rpc_py remove_vhost_controller naa.Nvme0n1p0.0
-    $rpc_py remove_vhost_controller naa.Nvme0n1p1.0
-    $rpc_py remove_vhost_controller naa.Nvme0n1p2.1
-    $rpc_py remove_vhost_controller naa.Nvme0n1p3.1
+function vhost_delete_controllers() {
+    $rpc_py vhost_delete_controller naa.Nvme0n1p0.0
+    $rpc_py vhost_delete_controller naa.Nvme0n1p1.0
+    $rpc_py vhost_delete_controller naa.Nvme0n1p2.1
+    $rpc_py vhost_delete_controller naa.Nvme0n1p3.1
 }
 
 # Vhost blk hot remove test cases
@@ -57,10 +57,10 @@ function blk_hotremove_tc1() {
 function blk_hotremove_tc2() {
     echo "Blk hotremove test case 2"
     # 1. Use rpc command to create blk controllers.
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p0.0 HotInNvme0n1p0
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p1.0 Mallocp0
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p2.1 Mallocp1
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p3.1 Mallocp2
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p0.0 HotInNvme0n1p0
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p1.0 Mallocp0
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p2.1 Mallocp1
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p3.1 Mallocp2
     # 2. Run two VMs and attach every VM to two blk controllers.
     vm_run_with_arg "0 1"
     vms_prepare "0"
@@ -90,7 +90,7 @@ function blk_hotremove_tc2() {
     #    Expected: Fio should return error message and return code != 0.
     check_fio_retcode "Blk hotremove test case 2: Iteration 2." 1 $retcode
     vm_shutdown_all
-    remove_vhost_controllers
+    vhost_delete_controllers
     add_nvme "HotInNvme1" "$traddr"
     sleep 1
 }
@@ -99,10 +99,10 @@ function blk_hotremove_tc2() {
 function blk_hotremove_tc3() {
     echo "Blk hotremove test case 3"
     # 1. Use rpc command to create blk controllers.
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p0.0 HotInNvme1n1p0
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p1.0 Mallocp0
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p2.1 HotInNvme1n1p1
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p3.1 Mallocp1
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p0.0 HotInNvme1n1p0
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p1.0 Mallocp0
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p2.1 HotInNvme1n1p1
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p3.1 Mallocp1
     # 2. Run two VMs and attach every VM to two blk controllers.
     vm_run_with_arg "0 1"
     vms_prepare "0 1"
@@ -132,7 +132,7 @@ function blk_hotremove_tc3() {
     #    Expected: Fio should return error message and return code != 0.
     check_fio_retcode "Blk hotremove test case 3: Iteration 2." 1 $retcode
     vm_shutdown_all
-    remove_vhost_controllers
+    vhost_delete_controllers
     add_nvme "HotInNvme2" "$traddr"
     sleep 1
 }
@@ -141,10 +141,10 @@ function blk_hotremove_tc3() {
 function blk_hotremove_tc4() {
     echo "Blk hotremove test case 4"
     # 1. Use rpc command to create blk controllers.
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p0.0 HotInNvme2n1p0
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p1.0 Mallocp0
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p2.1 HotInNvme2n1p1
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p3.1 Mallocp1
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p0.0 HotInNvme2n1p0
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p1.0 Mallocp0
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p2.1 HotInNvme2n1p1
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p3.1 Mallocp1
     # 2. Run two VM, attached to blk controllers.
     vm_run_with_arg "0 1"
     vms_prepare "0 1"
@@ -183,7 +183,7 @@ function blk_hotremove_tc4() {
     check_fio_retcode "Blk hotremove test case 4: Iteration 3." 1 $retcode
 
     vm_shutdown_all
-    remove_vhost_controllers
+    vhost_delete_controllers
     add_nvme "HotInNvme3" "$traddr"
     sleep 1
 }
@@ -192,10 +192,10 @@ function blk_hotremove_tc4() {
 function blk_hotremove_tc5() {
     echo "Blk hotremove test case 5"
     # 1. Use rpc command to create blk controllers.
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p0.0 HotInNvme3n1p0
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p1.0 Mallocp0
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p2.1 Mallocp1
-    $rpc_py construct_vhost_blk_controller naa.Nvme0n1p3.1 Mallocp2
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p0.0 HotInNvme3n1p0
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p1.0 Mallocp0
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p2.1 Mallocp1
+    $rpc_py vhost_create_blk_controller naa.Nvme0n1p3.1 Mallocp2
     # 2. Run two VM, attached to blk controllers.
     vm_run_with_arg "0 1"
     vms_prepare "0 1"
@@ -223,7 +223,7 @@ function blk_hotremove_tc5() {
     #    Expected: Fio should return error message and return code != 0.
     check_fio_retcode "Blk hotremove test case 5: Iteration 2." 1 $retcode
     vm_shutdown_all
-    remove_vhost_controllers
+    vhost_delete_controllers
     add_nvme "HotInNvme4" "$traddr"
     sleep 1
 }

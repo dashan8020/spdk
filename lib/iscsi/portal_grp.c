@@ -44,6 +44,7 @@
 #include "iscsi/iscsi.h"
 #include "iscsi/conn.h"
 #include "iscsi/portal_grp.h"
+#include "iscsi/tgt_node.h"
 
 #define PORTNUMSTRLEN 32
 #define ACCEPT_TIMEOUT_US 1000 /* 1ms */
@@ -366,6 +367,13 @@ spdk_iscsi_portal_grp_create(int tag)
 	pg->ref = 0;
 	pg->tag = tag;
 
+	pthread_mutex_lock(&g_spdk_iscsi.mutex);
+	pg->disable_chap = g_spdk_iscsi.disable_chap;
+	pg->require_chap = g_spdk_iscsi.require_chap;
+	pg->mutual_chap = g_spdk_iscsi.mutual_chap;
+	pg->chap_group = g_spdk_iscsi.chap_group;
+	pthread_mutex_unlock(&g_spdk_iscsi.mutex);
+
 	TAILQ_INIT(&pg->head);
 
 	return pg;
@@ -414,6 +422,24 @@ spdk_iscsi_portal_grp_add_portal(struct spdk_iscsi_portal_grp *pg,
 
 	p->group = pg;
 	TAILQ_INSERT_TAIL(&pg->head, p, per_pg_tailq);
+}
+
+int
+spdk_iscsi_portal_grp_set_chap_params(struct spdk_iscsi_portal_grp *pg,
+				      bool disable_chap, bool require_chap,
+				      bool mutual_chap, int32_t chap_group)
+{
+	if (!spdk_iscsi_check_chap_params(disable_chap, require_chap,
+					  mutual_chap, chap_group)) {
+		return -EINVAL;
+	}
+
+	pg->disable_chap = disable_chap;
+	pg->require_chap = require_chap;
+	pg->mutual_chap = mutual_chap;
+	pg->chap_group = chap_group;
+
+	return 0;
 }
 
 static int
@@ -696,7 +722,7 @@ iscsi_portal_grp_config_json(struct spdk_iscsi_portal_grp *pg,
 {
 	spdk_json_write_object_begin(w);
 
-	spdk_json_write_named_string(w, "method", "add_portal_group");
+	spdk_json_write_named_string(w, "method", "iscsi_create_portal_group");
 
 	spdk_json_write_name(w, "params");
 	iscsi_portal_grp_info_json(pg, w);

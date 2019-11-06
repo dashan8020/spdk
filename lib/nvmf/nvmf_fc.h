@@ -226,9 +226,6 @@ struct spdk_nvmf_fc_conn {
 	/* number of read/write requests that are outstanding */
 	uint16_t cur_fc_rw_depth;
 
-	/* requests that are waiting to obtain xchg/buffer */
-	TAILQ_HEAD(, spdk_nvmf_fc_request) pending_queue;
-
 	struct spdk_nvmf_fc_association *fc_assoc;
 
 	uint16_t rpi;
@@ -263,10 +260,8 @@ struct spdk_nvmf_fc_xchg {
  *  FC poll group structure
  */
 struct spdk_nvmf_fc_poll_group {
-	struct spdk_nvmf_transport_poll_group tp_poll_group;
-	struct spdk_nvmf_poll_group *poll_group;
+	struct spdk_nvmf_transport_poll_group group;
 	struct spdk_nvmf_tgt *nvmf_tgt;
-	struct spdk_nvmf_fc_transport *fc_transport;
 	uint32_t hwqp_count; /* number of hwqp's assigned to this pg */
 	TAILQ_HEAD(, spdk_nvmf_fc_hwqp) hwqp_list;
 
@@ -284,7 +279,7 @@ struct spdk_nvmf_fc_hwqp {
 	uint32_t rq_size;    /* receive queue size */
 	spdk_nvmf_fc_lld_hwqp_t queues;    /* vendor HW queue set */
 	struct spdk_nvmf_fc_port *fc_port; /* HW port structure for these queues */
-	struct spdk_nvmf_fc_poll_group *fc_poll_group;
+	struct spdk_nvmf_fc_poll_group *fgroup;
 
 	/* qpair (fc_connection) list */
 	TAILQ_HEAD(, spdk_nvmf_fc_conn) connection_list;
@@ -316,6 +311,7 @@ struct spdk_nvmf_fc_port {
 	uint16_t fcp_rq_id;
 	struct spdk_nvmf_fc_hwqp ls_queue;
 	new_qpair_fn new_qp_cb;
+	void *new_qp_arg;
 
 	uint32_t num_io_queues;
 	struct spdk_nvmf_fc_hwqp *io_queues;
@@ -350,10 +346,8 @@ struct spdk_nvmf_fc_request {
 	uint32_t magic;
 	uint32_t s_id;
 	uint32_t d_id;
-	void *buffers[SPDK_NVMF_MAX_SGL_ENTRIES];
-	bool data_from_pool;
 	TAILQ_ENTRY(spdk_nvmf_fc_request) link;
-	TAILQ_ENTRY(spdk_nvmf_fc_request) pending_link;
+	STAILQ_ENTRY(spdk_nvmf_fc_request) pending_link;
 	TAILQ_HEAD(, spdk_nvmf_fc_caller_ctx) abort_cbs;
 };
 

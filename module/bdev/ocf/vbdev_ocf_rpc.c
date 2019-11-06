@@ -38,7 +38,7 @@
 #include "spdk/string.h"
 
 /* Structure to hold the parameters for this RPC method. */
-struct rpc_construct_ocf_bdev {
+struct rpc_bdev_ocf_create {
 	char *name;             /* master vbdev */
 	char *mode;             /* OCF mode (choose one) */
 	char *cache_bdev_name;  /* sub bdev */
@@ -46,7 +46,7 @@ struct rpc_construct_ocf_bdev {
 };
 
 static void
-free_rpc_construct_ocf_bdev(struct rpc_construct_ocf_bdev *r)
+free_rpc_bdev_ocf_create(struct rpc_bdev_ocf_create *r)
 {
 	free(r->name);
 	free(r->core_bdev_name);
@@ -55,11 +55,11 @@ free_rpc_construct_ocf_bdev(struct rpc_construct_ocf_bdev *r)
 }
 
 /* Structure to decode the input parameters for this RPC method. */
-static const struct spdk_json_object_decoder rpc_construct_ocf_bdev_decoders[] = {
-	{"name", offsetof(struct rpc_construct_ocf_bdev, name), spdk_json_decode_string},
-	{"mode", offsetof(struct rpc_construct_ocf_bdev, mode), spdk_json_decode_string},
-	{"cache_bdev_name", offsetof(struct rpc_construct_ocf_bdev, cache_bdev_name), spdk_json_decode_string},
-	{"core_bdev_name", offsetof(struct rpc_construct_ocf_bdev, core_bdev_name), spdk_json_decode_string},
+static const struct spdk_json_object_decoder rpc_bdev_ocf_create_decoders[] = {
+	{"name", offsetof(struct rpc_bdev_ocf_create, name), spdk_json_decode_string},
+	{"mode", offsetof(struct rpc_bdev_ocf_create, mode), spdk_json_decode_string},
+	{"cache_bdev_name", offsetof(struct rpc_bdev_ocf_create, cache_bdev_name), spdk_json_decode_string},
+	{"core_bdev_name", offsetof(struct rpc_bdev_ocf_create, core_bdev_name), spdk_json_decode_string},
 };
 
 static void
@@ -80,42 +80,43 @@ construct_cb(int status, struct vbdev_ocf *vbdev, void *cb_arg)
 }
 
 static void
-spdk_rpc_construct_ocf_bdev(struct spdk_jsonrpc_request *request,
-			    const struct spdk_json_val *params)
+spdk_rpc_bdev_ocf_create(struct spdk_jsonrpc_request *request,
+			 const struct spdk_json_val *params)
 {
-	struct rpc_construct_ocf_bdev req = {NULL};
+	struct rpc_bdev_ocf_create req = {NULL};
 	int ret;
 
-	ret = spdk_json_decode_object(params, rpc_construct_ocf_bdev_decoders,
-				      SPDK_COUNTOF(rpc_construct_ocf_bdev_decoders),
+	ret = spdk_json_decode_object(params, rpc_bdev_ocf_create_decoders,
+				      SPDK_COUNTOF(rpc_bdev_ocf_create_decoders),
 				      &req);
 	if (ret) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
-		free_rpc_construct_ocf_bdev(&req);
+		free_rpc_bdev_ocf_create(&req);
 		return;
 	}
 
 	vbdev_ocf_construct(req.name, req.mode, req.cache_bdev_name, req.core_bdev_name, false,
 			    construct_cb, request);
-	free_rpc_construct_ocf_bdev(&req);
+	free_rpc_bdev_ocf_create(&req);
 }
-SPDK_RPC_REGISTER("construct_ocf_bdev", spdk_rpc_construct_ocf_bdev, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_ocf_create", spdk_rpc_bdev_ocf_create, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(bdev_ocf_create, construct_ocf_bdev)
 
 /* Structure to hold the parameters for this RPC method. */
-struct rpc_delete_ocf_bdev {
+struct rpc_bdev_ocf_delete {
 	char *name;             /* master vbdev name */
 };
 
 static void
-free_rpc_delete_ocf_bdev(struct rpc_delete_ocf_bdev *r)
+free_rpc_bdev_ocf_delete(struct rpc_bdev_ocf_delete *r)
 {
 	free(r->name);
 }
 
 /* Structure to decode the input parameters for this RPC method. */
-static const struct spdk_json_object_decoder rpc_delete_ocf_bdev_decoders[] = {
-	{"name", offsetof(struct rpc_delete_ocf_bdev, name), spdk_json_decode_string},
+static const struct spdk_json_object_decoder rpc_bdev_ocf_delete_decoders[] = {
+	{"name", offsetof(struct rpc_bdev_ocf_delete, name), spdk_json_decode_string},
 };
 
 static void
@@ -136,15 +137,15 @@ delete_cb(void *cb_arg, int status)
 }
 
 static void
-spdk_rpc_delete_ocf_bdev(struct spdk_jsonrpc_request *request,
+spdk_rpc_bdev_ocf_delete(struct spdk_jsonrpc_request *request,
 			 const struct spdk_json_val *params)
 {
-	struct rpc_delete_ocf_bdev req = {NULL};
+	struct rpc_bdev_ocf_delete req = {NULL};
 	struct vbdev_ocf *vbdev;
 	int status;
 
-	status = spdk_json_decode_object(params, rpc_delete_ocf_bdev_decoders,
-					 SPDK_COUNTOF(rpc_delete_ocf_bdev_decoders),
+	status = spdk_json_decode_object(params, rpc_bdev_ocf_delete_decoders,
+					 SPDK_COUNTOF(rpc_bdev_ocf_delete_decoders),
 					 &req);
 	if (status) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
@@ -159,7 +160,7 @@ spdk_rpc_delete_ocf_bdev(struct spdk_jsonrpc_request *request,
 		goto end;
 	}
 
-	status = vbdev_ocf_delete(vbdev, delete_cb, request);
+	status = vbdev_ocf_delete_clean(vbdev, delete_cb, request);
 	if (status) {
 		spdk_jsonrpc_send_error_response_fmt(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						     "Could not delete OCF vbdev: %s",
@@ -168,40 +169,85 @@ spdk_rpc_delete_ocf_bdev(struct spdk_jsonrpc_request *request,
 	}
 
 end:
-	free_rpc_delete_ocf_bdev(&req);
+	free_rpc_bdev_ocf_delete(&req);
 }
-SPDK_RPC_REGISTER("delete_ocf_bdev", spdk_rpc_delete_ocf_bdev, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_ocf_delete", spdk_rpc_bdev_ocf_delete, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(bdev_ocf_delete, delete_ocf_bdev)
 
 /* Structure to hold the parameters for this RPC method. */
-struct rpc_get_ocf_stats {
+struct rpc_bdev_ocf_get_stats {
 	char *name;             /* master vbdev name */
 };
 
 static void
-free_rpc_get_ocf_stats(struct rpc_get_ocf_stats *r)
+free_rpc_bdev_ocf_get_stats(struct rpc_bdev_ocf_get_stats *r)
 {
 	free(r->name);
 }
 
 /* Structure to decode the input parameters for this RPC method. */
-static const struct spdk_json_object_decoder rpc_get_ocf_stats_decoders[] = {
-	{"name", offsetof(struct rpc_get_ocf_stats, name), spdk_json_decode_string},
+static const struct spdk_json_object_decoder rpc_bdev_ocf_get_stats_decoders[] = {
+	{"name", offsetof(struct rpc_bdev_ocf_get_stats, name), spdk_json_decode_string},
+};
+
+struct get_ocf_stats_ctx {
+	struct spdk_jsonrpc_request *request;
+	int core_id;
 };
 
 static void
-spdk_rpc_get_ocf_stats(struct spdk_jsonrpc_request *request, const struct spdk_json_val *params)
+spdk_rpc_bdev_ocf_get_stats_cmpl(ocf_cache_t cache, void *priv, int error)
 {
-	struct rpc_get_ocf_stats req = {NULL};
+	struct get_ocf_stats_ctx *ctx = (struct get_ocf_stats_ctx *) priv;
 	struct spdk_json_write_ctx *w;
-	struct vbdev_ocf *vbdev;
 	struct vbdev_ocf_stats stats;
-	int status;
 
-	if (spdk_json_decode_object(params, rpc_get_ocf_stats_decoders,
-				    SPDK_COUNTOF(rpc_get_ocf_stats_decoders),
+	if (error) {
+		goto end;
+	}
+
+	error = vbdev_ocf_stats_get(cache, ctx->core_id, &stats);
+
+	ocf_mngt_cache_read_unlock(cache);
+
+	if (error) {
+		goto end;
+	}
+
+	w = spdk_jsonrpc_begin_result(ctx->request);
+	vbdev_ocf_stats_write_json(w, &stats);
+	spdk_jsonrpc_end_result(ctx->request, w);
+
+end:
+	if (error) {
+		spdk_jsonrpc_send_error_response_fmt(ctx->request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						     "Could not get stats: %s",
+						     spdk_strerror(-error));
+	}
+	free(ctx);
+}
+
+static void
+spdk_rpc_bdev_ocf_get_stats(struct spdk_jsonrpc_request *request,
+			    const struct spdk_json_val *params)
+{
+	struct rpc_bdev_ocf_get_stats req = {NULL};
+	struct vbdev_ocf *vbdev;
+	struct get_ocf_stats_ctx *ctx;
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "Not enough memory to process request");
+		goto end;
+	}
+
+	if (spdk_json_decode_object(params, rpc_bdev_ocf_get_stats_decoders,
+				    SPDK_COUNTOF(rpc_bdev_ocf_get_stats_decoders),
 				    &req)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
+		free(ctx);
 		goto end;
 	}
 
@@ -209,51 +255,45 @@ spdk_rpc_get_ocf_stats(struct spdk_jsonrpc_request *request, const struct spdk_j
 	if (vbdev == NULL) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 spdk_strerror(ENODEV));
+		free(ctx);
 		goto end;
 	}
 
-	status = vbdev_ocf_stats_get(vbdev->ocf_cache, vbdev->core.id, &stats);
-	if (status) {
-		spdk_jsonrpc_send_error_response_fmt(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
-						     "Could not get stats: %s",
-						     spdk_strerror(-status));
-		goto end;
-	}
-
-	w = spdk_jsonrpc_begin_result(request);
-	vbdev_ocf_stats_write_json(w, &stats);
-	spdk_jsonrpc_end_result(request, w);
+	ctx->core_id = vbdev->core.id;
+	ctx->request = request;
+	ocf_mngt_cache_read_lock(vbdev->ocf_cache, spdk_rpc_bdev_ocf_get_stats_cmpl, ctx);
 
 end:
-	free_rpc_get_ocf_stats(&req);
+	free_rpc_bdev_ocf_get_stats(&req);
 }
-SPDK_RPC_REGISTER("get_ocf_stats", spdk_rpc_get_ocf_stats, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_ocf_get_stats", spdk_rpc_bdev_ocf_get_stats, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(bdev_ocf_get_stats, get_ocf_stats)
 
 /* Structure to hold the parameters for this RPC method. */
-struct rpc_get_ocf_bdevs {
+struct rpc_bdev_ocf_get_bdevs {
 	char *name;
 };
 
 static void
-free_rpc_get_ocf_bdevs(struct rpc_get_ocf_bdevs *r)
+free_rpc_bdev_ocf_get_bdevs(struct rpc_bdev_ocf_get_bdevs *r)
 {
 	free(r->name);
 }
 
 /* Structure to decode the input parameters for this RPC method. */
-static const struct spdk_json_object_decoder rpc_get_ocf_bdevs_decoders[] = {
-	{"name", offsetof(struct rpc_get_ocf_bdevs, name), spdk_json_decode_string, true},
+static const struct spdk_json_object_decoder rpc_bdev_ocf_get_bdevs_decoders[] = {
+	{"name", offsetof(struct rpc_bdev_ocf_get_bdevs, name), spdk_json_decode_string, true},
 };
 
-struct get_bdevs_ctx {
+struct bdev_get_bdevs_ctx {
 	char *name;
 	struct spdk_json_write_ctx *w;
 };
 
 static void
-get_bdevs_fn(struct vbdev_ocf *vbdev, void *ctx)
+bdev_get_bdevs_fn(struct vbdev_ocf *vbdev, void *ctx)
 {
-	struct get_bdevs_ctx *cctx = ctx;
+	struct bdev_get_bdevs_ctx *cctx = ctx;
 	struct spdk_json_write_ctx *w = cctx->w;
 
 	if (cctx->name != NULL &&
@@ -281,14 +321,15 @@ get_bdevs_fn(struct vbdev_ocf *vbdev, void *ctx)
 }
 
 static void
-spdk_rpc_get_ocf_bdevs(struct spdk_jsonrpc_request *request, const struct spdk_json_val *params)
+spdk_rpc_bdev_ocf_get_bdevs(struct spdk_jsonrpc_request *request,
+			    const struct spdk_json_val *params)
 {
 	struct spdk_json_write_ctx *w;
-	struct rpc_get_ocf_bdevs req = {NULL};
-	struct get_bdevs_ctx cctx;
+	struct rpc_bdev_ocf_get_bdevs req = {NULL};
+	struct bdev_get_bdevs_ctx cctx;
 
-	if (params && spdk_json_decode_object(params, rpc_get_ocf_bdevs_decoders,
-					      SPDK_COUNTOF(rpc_get_ocf_bdevs_decoders),
+	if (params && spdk_json_decode_object(params, rpc_bdev_ocf_get_bdevs_decoders,
+					      SPDK_COUNTOF(rpc_bdev_ocf_get_bdevs_decoders),
 					      &req)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "Invalid parameters");
@@ -310,11 +351,12 @@ spdk_rpc_get_ocf_bdevs(struct spdk_jsonrpc_request *request, const struct spdk_j
 	cctx.w       = w;
 
 	spdk_json_write_array_begin(w);
-	vbdev_ocf_foreach(get_bdevs_fn, &cctx);
+	vbdev_ocf_foreach(bdev_get_bdevs_fn, &cctx);
 	spdk_json_write_array_end(w);
 	spdk_jsonrpc_end_result(request, w);
 
 end:
-	free_rpc_get_ocf_bdevs(&req);
+	free_rpc_bdev_ocf_get_bdevs(&req);
 }
-SPDK_RPC_REGISTER("get_ocf_bdevs", spdk_rpc_get_ocf_bdevs, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("bdev_ocf_get_bdevs", spdk_rpc_bdev_ocf_get_bdevs, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(bdev_ocf_get_bdevs, get_ocf_bdevs)

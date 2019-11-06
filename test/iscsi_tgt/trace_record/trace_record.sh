@@ -58,14 +58,14 @@ record_pid=$!
 echo "Trace record pid: $record_pid"
 
 RPCS=
-RPCS+="add_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT\n"
-RPCS+="add_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK\n"
+RPCS+="iscsi_create_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT\n"
+RPCS+="iscsi_create_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK\n"
 
 echo "Create bdevs and target nodes"
 CONNECTION_NUMBER=15
 for i in $(seq 0 $CONNECTION_NUMBER); do
 	RPCS+="bdev_malloc_create $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE -b Malloc$i\n"
-	RPCS+="construct_target_node Target$i Target${i}_alias "Malloc$i:0" $PORTAL_TAG:$INITIATOR_TAG 256 -d\n"
+	RPCS+="iscsi_create_target_node Target$i Target${i}_alias "Malloc$i:0" $PORTAL_TAG:$INITIATOR_TAG 256 -d\n"
 done
 echo -e $RPCS | $rpc_py
 
@@ -85,8 +85,8 @@ iscsicleanup
 RPCS=
 # Delete Malloc blockdevs and targets
 for i in $(seq 0 $CONNECTION_NUMBER); do
-	RPCS+="delete_target_node iqn.2016-06.io.spdk:Target$i\n"
-	RPCS+="delete_malloc_bdev Malloc$i\n"
+	RPCS+="iscsi_delete_target_node iqn.2016-06.io.spdk:Target$i\n"
+	RPCS+="bdev_malloc_delete Malloc$i\n"
 done
 echo -e $RPCS | $rpc_py
 

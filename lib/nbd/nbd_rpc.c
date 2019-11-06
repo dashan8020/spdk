@@ -41,7 +41,7 @@
 #include "nbd_internal.h"
 #include "spdk_internal/log.h"
 
-struct rpc_start_nbd_disk {
+struct rpc_nbd_start_disk {
 	char *bdev_name;
 	char *nbd_device;
 	/* Used to search one available nbd device */
@@ -51,16 +51,16 @@ struct rpc_start_nbd_disk {
 };
 
 static void
-free_rpc_start_nbd_disk(struct rpc_start_nbd_disk *req)
+free_rpc_nbd_start_disk(struct rpc_nbd_start_disk *req)
 {
 	free(req->bdev_name);
 	free(req->nbd_device);
 	free(req);
 }
 
-static const struct spdk_json_object_decoder rpc_start_nbd_disk_decoders[] = {
-	{"bdev_name", offsetof(struct rpc_start_nbd_disk, bdev_name), spdk_json_decode_string},
-	{"nbd_device", offsetof(struct rpc_start_nbd_disk, nbd_device), spdk_json_decode_string, true},
+static const struct spdk_json_object_decoder rpc_nbd_start_disk_decoders[] = {
+	{"bdev_name", offsetof(struct rpc_nbd_start_disk, bdev_name), spdk_json_decode_string},
+	{"nbd_device", offsetof(struct rpc_nbd_start_disk, nbd_device), spdk_json_decode_string, true},
 };
 
 /* Return 0 to indicate the nbd_device might be available,
@@ -138,7 +138,7 @@ find_available_nbd_disk(int nbd_idx, int *next_nbd_idx)
 static void
 spdk_rpc_start_nbd_done(void *cb_arg, struct spdk_nbd_disk *nbd, int rc)
 {
-	struct rpc_start_nbd_disk *req = cb_arg;
+	struct rpc_nbd_start_disk *req = cb_arg;
 	struct spdk_jsonrpc_request *request = req->request;
 	struct spdk_json_write_ctx *w;
 
@@ -165,25 +165,25 @@ spdk_rpc_start_nbd_done(void *cb_arg, struct spdk_nbd_disk *nbd, int rc)
 	spdk_json_write_string(w, spdk_nbd_get_path(nbd));
 	spdk_jsonrpc_end_result(request, w);
 
-	free_rpc_start_nbd_disk(req);
+	free_rpc_nbd_start_disk(req);
 }
 
 static void
-spdk_rpc_start_nbd_disk(struct spdk_jsonrpc_request *request,
+spdk_rpc_nbd_start_disk(struct spdk_jsonrpc_request *request,
 			const struct spdk_json_val *params)
 {
-	struct rpc_start_nbd_disk *req;
+	struct rpc_nbd_start_disk *req;
 	int rc;
 
 	req = calloc(1, sizeof(*req));
 	if (req == NULL) {
-		SPDK_ERRLOG("could not allocate start_nbd_disk request.\n");
+		SPDK_ERRLOG("could not allocate nbd_start_disk request.\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR, "Out of memory");
 		return;
 	}
 
-	if (spdk_json_decode_object(params, rpc_start_nbd_disk_decoders,
-				    SPDK_COUNTOF(rpc_start_nbd_disk_decoders),
+	if (spdk_json_decode_object(params, rpc_nbd_start_disk_decoders,
+				    SPDK_COUNTOF(rpc_nbd_start_disk_decoders),
 				    req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -228,23 +228,24 @@ spdk_rpc_start_nbd_disk(struct spdk_jsonrpc_request *request,
 	return;
 
 invalid:
-	free_rpc_start_nbd_disk(req);
+	free_rpc_nbd_start_disk(req);
 }
 
-SPDK_RPC_REGISTER("start_nbd_disk", spdk_rpc_start_nbd_disk, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("nbd_start_disk", spdk_rpc_nbd_start_disk, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(nbd_start_disk, start_nbd_disk)
 
-struct rpc_stop_nbd_disk {
+struct rpc_nbd_stop_disk {
 	char *nbd_device;
 };
 
 static void
-free_rpc_stop_nbd_disk(struct rpc_stop_nbd_disk *req)
+free_rpc_nbd_stop_disk(struct rpc_nbd_stop_disk *req)
 {
 	free(req->nbd_device);
 }
 
-static const struct spdk_json_object_decoder rpc_stop_nbd_disk_decoders[] = {
-	{"nbd_device", offsetof(struct rpc_stop_nbd_disk, nbd_device), spdk_json_decode_string},
+static const struct spdk_json_object_decoder rpc_nbd_stop_disk_decoders[] = {
+	{"nbd_device", offsetof(struct rpc_nbd_stop_disk, nbd_device), spdk_json_decode_string},
 };
 
 struct nbd_disconnect_arg {
@@ -271,17 +272,17 @@ nbd_disconnect_thread(void *arg)
 }
 
 static void
-spdk_rpc_stop_nbd_disk(struct spdk_jsonrpc_request *request,
+spdk_rpc_nbd_stop_disk(struct spdk_jsonrpc_request *request,
 		       const struct spdk_json_val *params)
 {
-	struct rpc_stop_nbd_disk req = {};
+	struct rpc_nbd_stop_disk req = {};
 	struct spdk_nbd_disk *nbd;
 	pthread_t tid;
 	struct nbd_disconnect_arg *thd_arg = NULL;
 	int rc;
 
-	if (spdk_json_decode_object(params, rpc_stop_nbd_disk_decoders,
-				    SPDK_COUNTOF(rpc_stop_nbd_disk_decoders),
+	if (spdk_json_decode_object(params, rpc_nbd_stop_disk_decoders,
+				    SPDK_COUNTOF(rpc_nbd_stop_disk_decoders),
 				    &req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -334,10 +335,11 @@ spdk_rpc_stop_nbd_disk(struct spdk_jsonrpc_request *request,
 	}
 
 out:
-	free_rpc_stop_nbd_disk(&req);
+	free_rpc_nbd_stop_disk(&req);
 }
 
-SPDK_RPC_REGISTER("stop_nbd_disk", spdk_rpc_stop_nbd_disk, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("nbd_stop_disk", spdk_rpc_nbd_stop_disk, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(nbd_stop_disk, stop_nbd_disk)
 
 static void
 spdk_rpc_dump_nbd_info(struct spdk_json_write_ctx *w,
@@ -352,31 +354,31 @@ spdk_rpc_dump_nbd_info(struct spdk_json_write_ctx *w,
 	spdk_json_write_object_end(w);
 }
 
-struct rpc_get_nbd_disks {
+struct rpc_nbd_get_disks {
 	char *nbd_device;
 };
 
 static void
-free_rpc_get_nbd_disks(struct rpc_get_nbd_disks *r)
+free_rpc_nbd_get_disks(struct rpc_nbd_get_disks *r)
 {
 	free(r->nbd_device);
 }
 
-static const struct spdk_json_object_decoder rpc_get_nbd_disks_decoders[] = {
-	{"nbd_device", offsetof(struct rpc_get_nbd_disks, nbd_device), spdk_json_decode_string, true},
+static const struct spdk_json_object_decoder rpc_nbd_get_disks_decoders[] = {
+	{"nbd_device", offsetof(struct rpc_nbd_get_disks, nbd_device), spdk_json_decode_string, true},
 };
 
 static void
-spdk_rpc_get_nbd_disks(struct spdk_jsonrpc_request *request,
+spdk_rpc_nbd_get_disks(struct spdk_jsonrpc_request *request,
 		       const struct spdk_json_val *params)
 {
-	struct rpc_get_nbd_disks req = {};
+	struct rpc_nbd_get_disks req = {};
 	struct spdk_json_write_ctx *w;
 	struct spdk_nbd_disk *nbd = NULL;
 
 	if (params != NULL) {
-		if (spdk_json_decode_object(params, rpc_get_nbd_disks_decoders,
-					    SPDK_COUNTOF(rpc_get_nbd_disks_decoders),
+		if (spdk_json_decode_object(params, rpc_nbd_get_disks_decoders,
+					    SPDK_COUNTOF(rpc_nbd_get_disks_decoders),
 					    &req)) {
 			SPDK_ERRLOG("spdk_json_decode_object failed\n");
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -392,7 +394,7 @@ spdk_rpc_get_nbd_disks(struct spdk_jsonrpc_request *request,
 				goto invalid;
 			}
 
-			free_rpc_get_nbd_disks(&req);
+			free_rpc_nbd_get_disks(&req);
 		}
 	}
 
@@ -414,6 +416,7 @@ spdk_rpc_get_nbd_disks(struct spdk_jsonrpc_request *request,
 	return;
 
 invalid:
-	free_rpc_get_nbd_disks(&req);
+	free_rpc_nbd_get_disks(&req);
 }
-SPDK_RPC_REGISTER("get_nbd_disks", spdk_rpc_get_nbd_disks, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER("nbd_get_disks", spdk_rpc_nbd_get_disks, SPDK_RPC_RUNTIME)
+SPDK_RPC_REGISTER_ALIAS_DEPRECATED(nbd_get_disks, get_nbd_disks)

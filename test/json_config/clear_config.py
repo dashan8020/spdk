@@ -11,7 +11,7 @@ from rpc.client import print_dict, JSONRPCException  # noqa
 
 def get_bdev_name_key(bdev):
     bdev_name_key = 'name'
-    if 'method' in bdev and bdev['method'] == 'construct_split_vbdev':
+    if 'method' in bdev and bdev['method'] == 'bdev_split_create':
         bdev_name_key = "base_bdev"
     return bdev_name_key
 
@@ -30,50 +30,50 @@ def get_bdev_name(bdev):
     return bdev_name
 
 
-def get_bdev_destroy_method(bdev):
-    destroy_method_map = {'bdev_malloc_create': "delete_malloc_bdev",
-                          'bdev_null_create': "bdev_null_delete",
-                          'construct_rbd_bdev': "delete_rbd_bdev",
-                          'construct_pmem_bdev': "delete_pmem_bdev",
-                          'bdev_aio_create': "bdev_aio_delete",
-                          'bdev_error_create': "bdev_error_delete",
-                          'construct_split_vbdev': "destruct_split_vbdev",
-                          'construct_virtio_dev': "remove_virtio_bdev",
-                          'bdev_crypto_create': "bdev_crypto_delete",
-                          'bdev_delay_create': "bdev_delay_delete",
-                          'construct_passthru_bdev': "delete_passthru_bdev",
-                          'bdev_compress_create': 'bdev_compress_delete',
-                          }
+def get_bdev_delete_method(bdev):
+    delete_method_map = {'bdev_malloc_create': "bdev_malloc_delete",
+                         'bdev_null_create': "bdev_null_delete",
+                         'bdev_rbd_create': "bdev_rbd_delete",
+                         'bdev_pmem_create': "bdev_pmem_delete",
+                         'bdev_aio_create': "bdev_aio_delete",
+                         'bdev_error_create': "bdev_error_delete",
+                         'construct_split_vbdev': "destruct_split_vbdev",
+                         'bdev_virtio_attach_controller': "remove_virtio_bdev",
+                         'bdev_crypto_create': "bdev_crypto_delete",
+                         'bdev_delay_create': "bdev_delay_delete",
+                         'bdev_passthru_create': "bdev_passthru_delete",
+                         'bdev_compress_create': 'bdev_compress_delete',
+                         }
     destroy_method = None
     if 'method' in bdev:
         construct_method = bdev['method']
-        if construct_method in list(destroy_method_map.keys()):
-            destroy_method = destroy_method_map[construct_method]
+        if construct_method in list(delete_method_map.keys()):
+            destroy_method = delete_method_map[construct_method]
 
     return destroy_method
 
 
 def clear_bdev_subsystem(args, bdev_config):
-    rpc_bdevs = args.client.call("get_bdevs")
+    rpc_bdevs = args.client.call("bdev_get_bdevs")
     for bdev in bdev_config:
         bdev_name_key = get_bdev_name_key(bdev)
         bdev_name = get_bdev_name(bdev)
-        destroy_method = get_bdev_destroy_method(bdev)
+        destroy_method = get_bdev_delete_method(bdev)
         if destroy_method:
             args.client.call(destroy_method, {bdev_name_key: bdev_name})
 
     nvme_controllers = args.client.call("bdev_nvme_get_controllers")
     for ctrlr in nvme_controllers:
-        args.client.call('delete_nvme_controller', {'name': ctrlr['name']})
+        args.client.call('bdev_nvme_detach_controller', {'name': ctrlr['name']})
 
     ''' Disable and reset hotplug '''
-    rpc.bdev.set_bdev_nvme_hotplug(args.client, False)
+    rpc.bdev.bdev_nvme_set_hotplug(args.client, False)
 
 
 def get_nvmf_destroy_method(nvmf):
-    destroy_method_map = {'nvmf_subsystem_create': "delete_nvmf_subsystem"}
+    delete_method_map = {'nvmf_create_subsystem': "nvmf_delete_subsystem"}
     try:
-        return destroy_method_map[nvmf['method']]
+        return delete_method_map[nvmf['method']]
     except KeyError:
         return None
 
@@ -86,12 +86,12 @@ def clear_nvmf_subsystem(args, nvmf_config):
 
 
 def get_iscsi_destroy_method(iscsi):
-    destroy_method_map = {'add_portal_group': "delete_portal_group",
-                          'add_initiator_group': "delete_initiator_group",
-                          'construct_target_node': "delete_target_node",
-                          'set_iscsi_options': None
-                          }
-    return destroy_method_map[iscsi['method']]
+    delete_method_map = {'iscsi_create_portal_group': "iscsi_delete_portal_group",
+                         'iscsi_create_initiator_group': "iscsi_delete_initiator_group",
+                         'iscsi_create_target_node': "iscsi_delete_target_node",
+                         'iscsi_set_options': None
+                         }
+    return delete_method_map[iscsi['method']]
 
 
 def get_iscsi_name(iscsi):
@@ -102,7 +102,7 @@ def get_iscsi_name(iscsi):
 
 
 def get_iscsi_name_key(iscsi):
-    if iscsi['method'] == 'construct_target_node':
+    if iscsi['method'] == 'iscsi_create_target_node':
         return "name"
     else:
         return 'tag'
@@ -116,9 +116,9 @@ def clear_iscsi_subsystem(args, iscsi_config):
 
 
 def get_nbd_destroy_method(nbd):
-    destroy_method_map = {'start_nbd_disk': "stop_nbd_disk"
-                          }
-    return destroy_method_map[nbd['method']]
+    delete_method_map = {'nbd_start_disk': "nbd_stop_disk"
+                         }
+    return delete_method_map[nbd['method']]
 
 
 def clear_nbd_subsystem(args, nbd_config):
@@ -144,13 +144,13 @@ def clear_vhost_subsystem(args, vhost_config):
     for vhost in reversed(vhost_config):
         if 'method' in vhost:
             method = vhost['method']
-            if method in ['add_vhost_scsi_lun']:
-                args.client.call("remove_vhost_scsi_target",
+            if method in ['vhost_scsi_controller_add_target']:
+                args.client.call("vhost_scsi_controller_remove_target",
                                  {"ctrlr": vhost['params']['ctrlr'],
                                   "scsi_target_num": vhost['params']['scsi_target_num']})
-            elif method in ['construct_vhost_scsi_controller', 'construct_vhost_blk_controller',
-                            'construct_vhost_nvme_controller']:
-                args.client.call("remove_vhost_controller", {'ctrlr': vhost['params']['ctrlr']})
+            elif method in ['vhost_create_scsi_controller', 'vhost_create_blk_controller',
+                            'vhost_create_nvme_controller']:
+                args.client.call("vhost_delete_controller", {'ctrlr': vhost['params']['ctrlr']})
 
 
 def call_test_cmd(func):
@@ -176,7 +176,7 @@ if __name__ == "__main__":
 
     @call_test_cmd
     def clear_config(args):
-        for subsystem_item in reversed(args.client.call('get_subsystems')):
+        for subsystem_item in reversed(args.client.call('framework_get_subsystems')):
             args.subsystem = subsystem_item['subsystem']
             clear_subsystem(args)
 
@@ -185,7 +185,7 @@ if __name__ == "__main__":
 
     @call_test_cmd
     def clear_subsystem(args):
-        config = args.client.call('get_subsystem_config', {"name": args.subsystem})
+        config = args.client.call('framework_get_config', {"name": args.subsystem})
         if config is None:
             return
         if args.verbose:

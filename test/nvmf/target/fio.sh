@@ -21,9 +21,9 @@ malloc_bdevs+="$($rpc_py bdev_malloc_create $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE
 # Create a RAID-0 bdev from two malloc bdevs
 raid_malloc_bdevs="$($rpc_py bdev_malloc_create $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE) "
 raid_malloc_bdevs+="$($rpc_py bdev_malloc_create $MALLOC_BDEV_SIZE $MALLOC_BLOCK_SIZE)"
-$rpc_py construct_raid_bdev -n raid0 -z 64 -r 0 -b "$raid_malloc_bdevs"
+$rpc_py bdev_raid_create -n raid0 -z 64 -r 0 -b "$raid_malloc_bdevs"
 
-$rpc_py nvmf_subsystem_create nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
+$rpc_py nvmf_create_subsystem nqn.2016-06.io.spdk:cnode1 -a -s SPDK00000000000001
 for malloc_bdev in $malloc_bdevs; do
 	$rpc_py nvmf_subsystem_add_ns nqn.2016-06.io.spdk:cnode1 "$malloc_bdev"
 done
@@ -51,9 +51,9 @@ fio_pid=$!
 
 sleep 3
 
-$rpc_py destroy_raid_bdev "raid0"
+$rpc_py bdev_raid_delete "raid0"
 for malloc_bdev in $malloc_bdevs; do
-	$rpc_py delete_malloc_bdev "$malloc_bdev"
+	$rpc_py bdev_malloc_delete "$malloc_bdev"
 done
 
 fio_status=0
@@ -69,7 +69,7 @@ else
         echo "nvmf hotplug test: fio failed as expected"
 fi
 
-$rpc_py delete_nvmf_subsystem nqn.2016-06.io.spdk:cnode1
+$rpc_py nvmf_delete_subsystem nqn.2016-06.io.spdk:cnode1
 
 rm -f ./local-job0-0-verify.state
 rm -f ./local-job1-1-verify.state

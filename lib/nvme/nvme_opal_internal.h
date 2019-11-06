@@ -44,15 +44,13 @@
 #define OPAL_UID_LENGTH			8
 #define OPAL_MAX_LRS			8 /* minimum 8 defined by spec */
 
-#define SPDK_OPAL_TPER_TIMEOUT		30 /* seconds */
+#define SPDK_OPAL_TPER_TIMEOUT		600 /* seconds */
 
 #define GENERIC_HOST_SESSION_NUM	0x69
 
 #define OPAL_INVAL_PARAM		12
 
 #define SPDK_DTAERROR_NO_METHOD_STATUS	0x89
-
-typedef int (spdk_opal_cb)(struct spdk_opal_dev *dev, void *data);
 
 enum opal_token_type {
 	OPAL_DTA_TOKENID_BYTESTRING	= 0xE0,
@@ -303,6 +301,8 @@ struct spdk_opal_dev {
 	struct spdk_opal_locking_range_info *locking_range_info[OPAL_MAX_LRS];
 
 	pthread_mutex_t mutex_lock; /* some structs are accessed by current thread only */
+	spdk_opal_revert_cb revert_cb_fn;
+	void *ctx;  /* user context data */
 };
 
 #endif

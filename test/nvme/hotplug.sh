@@ -12,7 +12,8 @@ fi
 function ssh_vm() {
 	local shell_restore_x="$( [[ "$-" =~ x ]] && echo 'set -x' )"
 	set +x
-	sshpass -p "$password" ssh -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -p 10022 root@localhost "$@"
+	sshpass -p "$password" ssh -o PubkeyAuthentication=no \
+	-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 10022 root@localhost "$@"
 	$shell_restore_x
 }
 
@@ -78,8 +79,8 @@ function devices_delete() {
 }
 
 password=$1
-base_img=${DEPENDENCY_DIR}/fedora24.img
-test_img=${DEPENDENCY_DIR}/fedora24_test.img
+base_img=${DEPENDENCY_DIR}/fedora-hotplug.qcow2
+test_img=${DEPENDENCY_DIR}/fedora-hotplug-test.qcow2
 qemu_pidfile=${DEPENDENCY_DIR}/qemupid
 
 if [ ! -e "$base_img" ]; then

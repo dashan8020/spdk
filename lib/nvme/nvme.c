@@ -33,6 +33,7 @@
 
 #include "spdk/nvmf_spec.h"
 #include "nvme_internal.h"
+#include "nvme_io_msg.h"
 
 #define SPDK_NVME_DRIVER_NAME "spdk_nvme_driver"
 
@@ -68,6 +69,7 @@ spdk_nvme_detach(struct spdk_nvme_ctrlr *ctrlr)
 	nvme_ctrlr_proc_put_ref(ctrlr);
 
 	if (nvme_ctrlr_get_ref_count(ctrlr) == 0) {
+		nvme_io_msg_ctrlr_stop(ctrlr, NULL, true);
 		if (nvme_ctrlr_shared(ctrlr)) {
 			TAILQ_REMOVE(&g_spdk_nvme_driver->shared_attached_ctrlrs, ctrlr, tailq);
 		} else {
@@ -426,7 +428,10 @@ nvme_ctrlr_probe(const struct spdk_nvme_transport_id *trid,
 			SPDK_ERRLOG("Failed to construct NVMe controller for SSD: %s\n", trid->traddr);
 			return -1;
 		}
+		ctrlr->remove_cb = probe_ctx->remove_cb;
+		ctrlr->cb_ctx = probe_ctx->cb_ctx;
 
+		nvme_qpair_set_state(ctrlr->adminq, NVME_QPAIR_ENABLED);
 		TAILQ_INSERT_TAIL(&probe_ctx->init_ctrlrs, ctrlr, tailq);
 		return 0;
 	}
@@ -446,6 +451,7 @@ nvme_ctrlr_poll_internal(struct spdk_nvme_ctrlr *ctrlr,
 		/* Controller failed to initialize. */
 		TAILQ_REMOVE(&probe_ctx->init_ctrlrs, ctrlr, tailq);
 		SPDK_ERRLOG("Failed to initialize SSD: %s\n", ctrlr->trid.traddr);
+		nvme_ctrlr_fail(ctrlr, false);
 		nvme_ctrlr_destruct(ctrlr);
 		return rc;
 	}
@@ -453,6 +459,8 @@ nvme_ctrlr_poll_internal(struct spdk_nvme_ctrlr *ctrlr,
 	if (ctrlr->state != NVME_CTRLR_STATE_READY) {
 		return 0;
 	}
+
+	STAILQ_INIT(&ctrlr->io_producers);
 
 	/*
 	 * Controller has been initialized.
@@ -876,6 +884,12 @@ spdk_nvme_transport_id_parse(struct spdk_nvme_transport_id *trid, const char *st
 			 * scenario, just silently ignore this key
 			 * rather than letting it default to logging
 			 * it as an invalid key.
+			 */
+			continue;
+		} else if (strcasecmp(key, "alt_traddr") == 0) {
+			/*
+			 * Used by applications for enabling transport ID failover.
+			 * Please see the case above for more information on custom parameters.
 			 */
 			continue;
 		} else {

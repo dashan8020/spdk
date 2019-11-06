@@ -27,6 +27,7 @@ run_test suite test/nvmf/target/nvmf_lvol.sh $TEST_ARGS
 run_test suite test/nvmf/target/nvmf_vhost.sh $TEST_ARGS
 run_test suite test/nvmf/target/bdev_io_wait.sh $TEST_ARGS
 run_test suite test/nvmf/target/create_transport.sh $TEST_ARGS
+run_test suite test/nvmf/target/multitarget.sh $TEST_ARGS
 
 if [ $RUN_NIGHTLY -eq 1 ]; then
 	run_test suite test/nvmf/target/fuzz.sh $TEST_ARGS
@@ -50,6 +51,10 @@ run_test suite test/nvmf/host/perf.sh $TEST_ARGS
 #run_test test/nvmf/host/identify_kernel_nvmf.sh $TEST_ARGS
 run_test suite test/nvmf/host/aer.sh $TEST_ARGS
 run_test suite test/nvmf/host/fio.sh $TEST_ARGS
+# The automated reconnect we do in this test currently only works for RDMA.
+if [ $TEST_TRANSPORT == "rdma" ]; then
+	run_test suite test/nvmf/host/target_disconnect.sh $TEST_ARGS
+fi
 
 timing_exit host
 

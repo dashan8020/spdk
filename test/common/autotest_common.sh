@@ -39,6 +39,7 @@ export RUN_NIGHTLY_FAILING
 : ${SPDK_TEST_ISCSI_INITIATOR=0}; export SPDK_TEST_ISCSI_INITIATOR
 : ${SPDK_TEST_NVME=0}; export SPDK_TEST_NVME
 : ${SPDK_TEST_NVME_CLI=0}; export SPDK_TEST_NVME_CLI
+: ${SPDK_TEST_NVME_CUSE=0}; export SPDK_TEST_NVME_CUSE
 : ${SPDK_TEST_NVMF=0}; export SPDK_TEST_NVMF
 : ${SPDK_TEST_NVMF_TRANSPORT="rdma"}; export SPDK_TEST_NVMF_TRANSPORT
 : ${SPDK_TEST_RBD=0}; export SPDK_TEST_RBD
@@ -56,17 +57,22 @@ export RUN_NIGHTLY_FAILING
 : ${SPDK_RUN_ASAN=0}; export SPDK_RUN_ASAN
 : ${SPDK_RUN_UBSAN=0}; export SPDK_RUN_UBSAN
 : ${SPDK_RUN_INSTALLED_DPDK=0}; export SPDK_RUN_INSTALLED_DPDK
+: ${SPDK_RUN_NON_ROOT=0}; export SPDK_RUN_NON_ROOT
 : ${SPDK_TEST_CRYPTO=0}; export SPDK_TEST_CRYPTO
 : ${SPDK_TEST_FTL=0}; export SPDK_TEST_FTL
-: ${SPDK_TEST_BDEV_FTL=0}; export SPDK_TEST_BDEV_FTL
 : ${SPDK_TEST_OCF=0}; export SPDK_TEST_OCF
 : ${SPDK_TEST_FTL_EXTENDED=0}; export SPDK_TEST_FTL_EXTENDED
 : ${SPDK_TEST_VMD=0}; export SPDK_TEST_VMD
+: ${SPDK_TEST_OPAL=0}; export SPDK_TEST_OPAL
 : ${SPDK_AUTOTEST_X=true}; export SPDK_AUTOTEST_X
 
 # Export PYTHONPATH with addition of RPC framework. New scripts can be created
 # specific use cases for tests.
 export PYTHONPATH=$PYTHONPATH:$rootdir/scripts
+
+# Don't create Python .pyc files. When running with sudo these will be
+# created with root ownership and can cause problems when cleaning the repository.
+export PYTHONDONTWRITEBYTECODE=1
 
 # Export flag to skip the known bug that exists in librados
 # Bug is reported on ceph bug tracker with number 24078
@@ -108,7 +114,7 @@ if [ $SPDK_RUN_VALGRIND -eq 0 ]; then
 fi
 
 if [ "$(uname -s)" = "Linux" ]; then
-	MAKE=make
+	MAKE="make"
 	MAKEFLAGS=${MAKEFLAGS:--j$(nproc)}
 	DPDK_LINUX_DIR=/usr/share/dpdk/x86_64-default-linuxapp-gcc
 	if [ -d $DPDK_LINUX_DIR ] && [ $SPDK_RUN_INSTALLED_DPDK -eq 1 ]; then
@@ -117,7 +123,7 @@ if [ "$(uname -s)" = "Linux" ]; then
 	# Override the default HUGEMEM in scripts/setup.sh to allocate 8GB in hugepages.
 	export HUGEMEM=8192
 elif [ "$(uname -s)" = "FreeBSD" ]; then
-	MAKE=gmake
+	MAKE="gmake"
 	MAKEFLAGS=${MAKEFLAGS:--j$(sysctl -a | grep -E -i 'hw.ncpu' | awk '{print $2}')}
 	DPDK_FREEBSD_DIR=/usr/local/share/dpdk/x86_64-native-bsdapp-clang
 	if [ -d $DPDK_FREEBSD_DIR ] && [ $SPDK_RUN_INSTALLED_DPDK -eq 1 ]; then
@@ -155,6 +161,10 @@ if [ -d /usr/include/iscsi ]; then
 	if [ $libiscsi_version -ge 20150621 ]; then
 		config_params+=' --with-iscsi-initiator'
 	fi
+fi
+
+if [ $SPDK_TEST_NVME_CUSE -eq 1 ]; then
+	config_params+=' --with-nvme-cuse'
 fi
 
 # for options with both dependencies and a test flag, set them here
@@ -208,6 +218,14 @@ fi
 
 if [ $SPDK_TEST_ISAL -eq 0 ]; then
 	config_params+=' --without-isal'
+fi
+
+if [ $SPDK_TEST_BLOBFS -eq 1 ]; then
+	if [[ -d /usr/include/fuse3 ]] && [[ -d /usr/local/include/fuse3 ]]; then
+		config_params+=' --with-fuse'
+	else
+		echo "FUSE not enabled because libfuse3 is not installed."
+	fi
 fi
 
 # By default, --with-dpdk is not set meaning the SPDK build will use the DPDK submodule.
@@ -300,7 +318,8 @@ function report_test_completion() {
 
 function process_core() {
 	ret=0
-	for core in $(find . -type f \( -name 'core\.?[0-9]*' -o -name '*.core' \)); do
+	while IFS= read -r -d '' core;
+	do
 		exe=$(eu-readelf -n "$core" | grep psargs | sed "s/.*psargs: \([^ \'\" ]*\).*/\1/")
 		if [[ ! -f "$exe" ]]; then
 			exe=$(eu-readelf -n "$core" | grep -oP -m1 "$exe.+")
@@ -315,7 +334,7 @@ function process_core() {
 		mv $core $output_dir
 		chmod a+r $output_dir/$core
 		ret=1
-	done
+	done < <(find . -type f \( -name 'core\.?[0-9]*' -o -name '*.core' \) -print0)
 	return $ret
 }
 
@@ -416,11 +435,15 @@ function waitforbdev() {
 	local i
 
 	for ((i=1; i<=20; i++)); do
-		if ! $rpc_py get_bdevs | jq -r '.[] .name' | grep -qw $bdev_name; then
-			sleep 0.1
-		else
+		if $rpc_py bdev_get_bdevs | jq -r '.[] .name' | grep -qw $bdev_name; then
 			return 0
 		fi
+
+		if $rpc_py bdev_get_bdevs | jq -r '.[] .aliases' | grep -qw $bdev_name; then
+			return 0
+		fi
+
+		sleep 0.1
 	done
 
 	return 1
@@ -433,8 +456,19 @@ function killprocess() {
 	fi
 
 	if kill -0 $1; then
-		echo "killing process with pid $1"
-		kill $1
+		if [ "$(ps --no-headers -o comm= $1)" = "sudo" ]; then
+			# kill the child process, which is the actual app
+			# (assume $1 has just one child)
+			local child="$(pgrep -P $1)"
+			echo "killing process with pid $child"
+			kill $child
+		else
+			echo "killing process with pid $1"
+			kill $1
+		fi
+
+		# wait for the process regardless if its the dummy sudo one
+		# or the actual app - it should terminate anyway
 		wait $1
 	fi
 }
@@ -522,16 +556,16 @@ function kill_stub() {
 
 function run_test() {
 	xtrace_disable
-	local test_type="$(echo $1 | tr 'a-z' 'A-Z')"
+	local test_type="$(echo $1 | tr '[:lower:]' '[:upper:]')"
 	shift
 	echo "************************************"
-	echo "START TEST $test_type $@"
+	echo "START TEST $test_type $*"
 	echo "************************************"
 	xtrace_restore
 	time "$@"
 	xtrace_disable
 	echo "************************************"
-	echo "END TEST $test_type $@"
+	echo "END TEST $test_type $*"
 	echo "************************************"
 	xtrace_restore
 }
@@ -549,7 +583,7 @@ function print_backtrace() {
 		local src="${BASH_SOURCE[$i]}"
 		echo "in $src:$line_nr -> $func()"
 		echo "     ..."
-		nl -w 4 -ba -nln $src | grep -B 5 -A 5 "^$line_nr[^0-9]" | \
+		nl -w 4 -ba -nln $src | grep -B 5 -A 5 "^${line_nr}[^0-9]" | \
 			sed "s/^/   /g" | sed "s/^   $line_nr /=> $line_nr /g"
 		echo "     ..."
 	done
@@ -585,7 +619,7 @@ function part_dev_by_gpt () {
 		echo "Process nbd pid: $nbd_pid"
 		waitforlisten $nbd_pid $rpc_server
 
-		# Start bdev as a nbd device
+		# Start bdev as an nbd device
 		nbd_start_disks "$rpc_server" $devname $nbd_path
 
 		waitfornbd ${nbd_path:5}
@@ -635,9 +669,9 @@ function discover_bdevs()
 
 	# Get all of the bdevs
 	if [ -z "$rpc_server" ]; then
-		$rootdir/scripts/rpc.py get_bdevs
+		$rootdir/scripts/rpc.py bdev_get_bdevs
 	else
-		$rootdir/scripts/rpc.py -s "$rpc_server" get_bdevs
+		$rootdir/scripts/rpc.py -s "$rpc_server" bdev_get_bdevs
 	fi
 
 	# Shut down the bdev service
@@ -698,6 +732,8 @@ function fio_config_gen()
 {
 	local config_file=$1
 	local workload=$2
+	local bdev_type=$3
+	local fio_dir="/usr/src/fio"
 
 	if [ -e "$config_file" ]; then
 		echo "Configuration File Already Exists!: $config_file"
@@ -725,6 +761,15 @@ EOL
 		echo "verify=sha1" >> $config_file
 		echo "verify_backlog=1024" >> $config_file
 		echo "rw=randwrite" >> $config_file
+
+		# To avoid potential data race issue due to the AIO device
+		# flush mechanism, add the flag to serialize the writes.
+		# This is to fix the intermittent IO failure issue of #935
+		if [ "$bdev_type" == "AIO" ]; then
+			if [[ $($fio_dir/fio --version) == *"fio-3"* ]]; then
+				echo "serialize_overlap=1" >> $config_file
+			fi
+		fi
 	elif [ "$workload" == "trim" ]; then
 		echo "rw=trimwrite" >> $config_file
 	else
@@ -760,7 +805,7 @@ function fio_bdev()
 	# Preload AddressSanitizer library to fio if fio_plugin was compiled with it
 	local asan_lib=$(ldd $bdev_plugin | grep libasan | awk '{print $3}')
 
-	LD_PRELOAD=""$asan_lib" "$bdev_plugin"" "$fio_dir"/fio "$@"
+	LD_PRELOAD="$asan_lib $bdev_plugin" "$fio_dir"/fio "$@"
 }
 
 function fio_nvme()
@@ -772,7 +817,7 @@ function fio_nvme()
 	# Preload AddressSanitizer library to fio if fio_plugin was compiled with it
 	asan_lib=$(ldd $nvme_plugin | grep libasan | awk '{print $3}')
 
-	LD_PRELOAD=""$asan_lib" "$nvme_plugin"" "$fio_dir"/fio "$@"
+	LD_PRELOAD="$asan_lib $nvme_plugin" "$fio_dir"/fio "$@"
 }
 
 function get_lvs_free_mb()
@@ -790,7 +835,7 @@ function get_lvs_free_mb()
 function get_bdev_size()
 {
 	local bdev_name=$1
-	local bdev_info=$($rpc_py get_bdevs -b $bdev_name)
+	local bdev_info=$($rpc_py bdev_get_bdevs -b $bdev_name)
 	local bs=$(jq ".[] .block_size" <<< "$bdev_info")
 	local nb=$(jq ".[] .num_blocks" <<< "$bdev_info")
 
@@ -847,6 +892,23 @@ function get_nvme_name_from_bdf {
 	done
 
 	printf '%s\n' "${blkname[@]}"
+}
+
+function opal_revert_cleanup {
+	$rootdir/app/spdk_tgt/spdk_tgt &
+	spdk_tgt_pid=$!
+	waitforlisten $spdk_tgt_pid
+
+	# ignore the result
+	set +e
+	# OPAL test only runs on the first NVMe device
+	# So we just revert the first one here
+	bdf=$($rootdir/scripts/gen_nvme.sh --json | jq -r '.config[].params | select(.name=="Nvme0").traddr')
+	$rootdir/scripts/rpc.py bdev_nvme_attach_controller -b "nvme0" -t "pcie" -a $bdf
+	$rootdir/scripts/rpc.py bdev_nvme_opal_revert -b nvme0 -p test
+	set -e
+
+	killprocess $spdk_tgt_pid
 }
 
 set -o errtrace

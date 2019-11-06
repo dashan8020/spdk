@@ -1,8 +1,8 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright (c) Intel Corporation.
- *   All rights reserved.
+ *   Copyright (c) Intel Corporation. All rights reserved.
+ *   Copyright (c) 2019 Mellanox Technologies LTD. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -63,6 +63,7 @@ extern "C" {
 /** Asynchronous event type */
 enum spdk_bdev_event_type {
 	SPDK_BDEV_EVENT_REMOVE,
+	SPDK_BDEV_EVENT_RESIZE
 };
 
 /**
@@ -126,6 +127,9 @@ enum spdk_bdev_io_type {
 	SPDK_BDEV_IO_TYPE_NVME_IO_MD,
 	SPDK_BDEV_IO_TYPE_WRITE_ZEROES,
 	SPDK_BDEV_IO_TYPE_ZCOPY,
+	SPDK_BDEV_IO_TYPE_GET_ZONE_INFO,
+	SPDK_BDEV_IO_TYPE_ZONE_MANAGEMENT,
+	SPDK_BDEV_IO_TYPE_ZONE_APPEND,
 	SPDK_BDEV_NUM_IO_TYPES /* Keep last */
 };
 
@@ -369,6 +373,21 @@ const char *spdk_bdev_get_product_name(const struct spdk_bdev *bdev);
 uint32_t spdk_bdev_get_block_size(const struct spdk_bdev *bdev);
 
 /**
+ * Get the write unit size for this bdev.
+ *
+ * Write unit size is required number of logical blocks to perform write
+ * operation on block device.
+ *
+ * Unit of write unit size is logical block and the minimum of write unit
+ * size is one. Write operations must be multiple of write unit size.
+ *
+ * \param bdev Block device to query.
+ *
+ * \return The write unit size in logical blocks.
+ */
+uint32_t spdk_bdev_get_write_unit_size(const struct spdk_bdev *bdev);
+
+/**
  * Get size of block device in logical blocks.
  *
  * \param bdev Block device to query.
@@ -479,6 +498,14 @@ bool spdk_bdev_is_md_interleaved(const struct spdk_bdev *bdev);
  * Note this function is valid only if there is metadata.
  */
 bool spdk_bdev_is_md_separate(const struct spdk_bdev *bdev);
+
+/**
+ * Checks if bdev supports zoned namespace semantics.
+ *
+ * \param bdev Block device to query.
+ * \return true if device supports zoned namespace sementics.
+ */
+bool spdk_bdev_is_zoned(const struct spdk_bdev *bdev);
 
 /**
  * Get block device data block size.
@@ -1332,13 +1359,16 @@ void spdk_bdev_get_device_stat(struct spdk_bdev *bdev, struct spdk_bdev_io_stat 
 			       spdk_bdev_get_device_stat_cb cb, void *cb_arg);
 
 /**
- * Get the status of bdev_io as an NVMe status code.
+ * Get the status of bdev_io as an NVMe status code and command specific
+ * completion queue value.
  *
  * \param bdev_io I/O to get the status from.
+ * \param cdw0 Command specific completion queue value
  * \param sct Status Code Type return value, as defined by the NVMe specification.
  * \param sc Status Code return value, as defined by the NVMe specification.
  */
-void spdk_bdev_io_get_nvme_status(const struct spdk_bdev_io *bdev_io, int *sct, int *sc);
+void spdk_bdev_io_get_nvme_status(const struct spdk_bdev_io *bdev_io, uint32_t *cdw0, int *sct,
+				  int *sc);
 
 /**
  * Get the status of bdev_io as a SCSI status code.

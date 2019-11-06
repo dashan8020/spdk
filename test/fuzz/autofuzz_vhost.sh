@@ -43,7 +43,7 @@ trap 'killprocess $vhostpid; killprocess $fuzzpid; exit 1' SIGINT SIGTERM exit
 
 if [ "$TEST_TRANSPORT" == "bdev" ] || [ "$TEST_TRANSPORT" == "all" ]; then
     $vhost_rpc_py bdev_malloc_create -b Malloc0 64 512
-    $vhost_rpc_py construct_vhost_blk_controller Vhost.1 Malloc0
+    $vhost_rpc_py vhost_create_blk_controller Vhost.1 Malloc0
 
     # test the vhost blk controller with valid data buffers.
     $fuzz_specific_rpc_py fuzz_vhost_create_dev -s $(pwd)/Vhost.1 -b -v
@@ -51,12 +51,12 @@ fi
 
 if [ "$TEST_TRANSPORT" == "scsi" ] || [ "$TEST_TRANSPORT" == "all" ]; then
     $vhost_rpc_py bdev_malloc_create -b Malloc1 64 512
-    $vhost_rpc_py construct_vhost_scsi_controller naa.VhostScsi0.1
-    $vhost_rpc_py add_vhost_scsi_lun naa.VhostScsi0.1 0 Malloc1
+    $vhost_rpc_py vhost_create_scsi_controller naa.VhostScsi0.1
+    $vhost_rpc_py vhost_scsi_controller_add_target naa.VhostScsi0.1 0 Malloc1
 
     $vhost_rpc_py bdev_malloc_create -b Malloc2 64 512
-    $vhost_rpc_py construct_vhost_scsi_controller naa.VhostScsi0.2
-    $vhost_rpc_py add_vhost_scsi_lun naa.VhostScsi0.2 0 Malloc2
+    $vhost_rpc_py vhost_create_scsi_controller naa.VhostScsi0.2
+    $vhost_rpc_py vhost_scsi_controller_add_target naa.VhostScsi0.2 0 Malloc2
 
     # test the vhost scsi I/O queue with valid data buffers on a valid lun.
     $fuzz_specific_rpc_py fuzz_vhost_create_dev -s $(pwd)/naa.VhostScsi0.1 -l -v
@@ -65,7 +65,7 @@ if [ "$TEST_TRANSPORT" == "scsi" ] || [ "$TEST_TRANSPORT" == "all" ]; then
 fi
 
 # The test won't actually begin until this option is passed in.
-$fuzz_generic_rpc_py start_subsystem_init
+$fuzz_generic_rpc_py framework_start_init
 
 wait $fuzzpid
 

@@ -14,43 +14,43 @@ fi
 # Then prepare vhost with rpc calls and setup and run 4 VMs.
 function pre_hot_attach_detach_test_case() {
     used_vms=""
-    $rpc_py construct_vhost_scsi_controller naa.Nvme0n1p0.0
-    $rpc_py construct_vhost_scsi_controller naa.Nvme0n1p1.0
-    $rpc_py construct_vhost_scsi_controller naa.Nvme0n1p2.1
-    $rpc_py construct_vhost_scsi_controller naa.Nvme0n1p3.1
-    $rpc_py construct_vhost_scsi_controller naa.Nvme0n1p4.2
-    $rpc_py construct_vhost_scsi_controller naa.Nvme0n1p5.2
-    $rpc_py construct_vhost_scsi_controller naa.Nvme0n1p6.3
-    $rpc_py construct_vhost_scsi_controller naa.Nvme0n1p7.3
-    $rpc_py add_vhost_scsi_lun naa.Nvme0n1p4.2 0 Nvme0n1p8
-    $rpc_py add_vhost_scsi_lun naa.Nvme0n1p4.2 1 Nvme0n1p9
-    $rpc_py add_vhost_scsi_lun naa.Nvme0n1p5.2 0 Nvme0n1p10
-    $rpc_py add_vhost_scsi_lun naa.Nvme0n1p5.2 1 Nvme0n1p11
-    $rpc_py add_vhost_scsi_lun naa.Nvme0n1p6.3 0 Nvme0n1p12
-    $rpc_py add_vhost_scsi_lun naa.Nvme0n1p6.3 1 Nvme0n1p13
-    $rpc_py add_vhost_scsi_lun naa.Nvme0n1p7.3 0 Nvme0n1p14
-    $rpc_py add_vhost_scsi_lun naa.Nvme0n1p7.3 1 Nvme0n1p15
+    $rpc_py vhost_create_scsi_controller naa.Nvme0n1p0.0
+    $rpc_py vhost_create_scsi_controller naa.Nvme0n1p1.0
+    $rpc_py vhost_create_scsi_controller naa.Nvme0n1p2.1
+    $rpc_py vhost_create_scsi_controller naa.Nvme0n1p3.1
+    $rpc_py vhost_create_scsi_controller naa.Nvme0n1p4.2
+    $rpc_py vhost_create_scsi_controller naa.Nvme0n1p5.2
+    $rpc_py vhost_create_scsi_controller naa.Nvme0n1p6.3
+    $rpc_py vhost_create_scsi_controller naa.Nvme0n1p7.3
+    $rpc_py vhost_scsi_controller_add_target naa.Nvme0n1p4.2 0 Nvme0n1p8
+    $rpc_py vhost_scsi_controller_add_target naa.Nvme0n1p4.2 1 Nvme0n1p9
+    $rpc_py vhost_scsi_controller_add_target naa.Nvme0n1p5.2 0 Nvme0n1p10
+    $rpc_py vhost_scsi_controller_add_target naa.Nvme0n1p5.2 1 Nvme0n1p11
+    $rpc_py vhost_scsi_controller_add_target naa.Nvme0n1p6.3 0 Nvme0n1p12
+    $rpc_py vhost_scsi_controller_add_target naa.Nvme0n1p6.3 1 Nvme0n1p13
+    $rpc_py vhost_scsi_controller_add_target naa.Nvme0n1p7.3 0 Nvme0n1p14
+    $rpc_py vhost_scsi_controller_add_target naa.Nvme0n1p7.3 1 Nvme0n1p15
     vms_setup_and_run "0 1 2 3"
     vms_prepare "0 1 2 3"
 }
 
 function clear_vhost_config() {
-    $rpc_py remove_vhost_scsi_target naa.Nvme0n1p4.2 0
-    $rpc_py remove_vhost_scsi_target naa.Nvme0n1p4.2 1
-    $rpc_py remove_vhost_scsi_target naa.Nvme0n1p5.2 0
-    $rpc_py remove_vhost_scsi_target naa.Nvme0n1p5.2 1
-    $rpc_py remove_vhost_scsi_target naa.Nvme0n1p6.3 0
-    $rpc_py remove_vhost_scsi_target naa.Nvme0n1p6.3 1
-    $rpc_py remove_vhost_scsi_target naa.Nvme0n1p7.3 0
-    $rpc_py remove_vhost_scsi_target naa.Nvme0n1p7.3 1
-    $rpc_py remove_vhost_controller naa.Nvme0n1p0.0
-    $rpc_py remove_vhost_controller naa.Nvme0n1p1.0
-    $rpc_py remove_vhost_controller naa.Nvme0n1p2.1
-    $rpc_py remove_vhost_controller naa.Nvme0n1p3.1
-    $rpc_py remove_vhost_controller naa.Nvme0n1p4.2
-    $rpc_py remove_vhost_controller naa.Nvme0n1p5.2
-    $rpc_py remove_vhost_controller naa.Nvme0n1p6.3
-    $rpc_py remove_vhost_controller naa.Nvme0n1p7.3
+    $rpc_py vhost_scsi_controller_remove_target naa.Nvme0n1p4.2 0
+    $rpc_py vhost_scsi_controller_remove_target naa.Nvme0n1p4.2 1
+    $rpc_py vhost_scsi_controller_remove_target naa.Nvme0n1p5.2 0
+    $rpc_py vhost_scsi_controller_remove_target naa.Nvme0n1p5.2 1
+    $rpc_py vhost_scsi_controller_remove_target naa.Nvme0n1p6.3 0
+    $rpc_py vhost_scsi_controller_remove_target naa.Nvme0n1p6.3 1
+    $rpc_py vhost_scsi_controller_remove_target naa.Nvme0n1p7.3 0
+    $rpc_py vhost_scsi_controller_remove_target naa.Nvme0n1p7.3 1
+    $rpc_py vhost_delete_controller naa.Nvme0n1p0.0
+    $rpc_py vhost_delete_controller naa.Nvme0n1p1.0
+    $rpc_py vhost_delete_controller naa.Nvme0n1p2.1
+    $rpc_py vhost_delete_controller naa.Nvme0n1p3.1
+    $rpc_py vhost_delete_controller naa.Nvme0n1p4.2
+    $rpc_py vhost_delete_controller naa.Nvme0n1p5.2
+    $rpc_py vhost_delete_controller naa.Nvme0n1p6.3
+    $rpc_py vhost_delete_controller naa.Nvme0n1p7.3
 }
 
 trap 'error_exit "${FUNCNAME}" "${LINENO}"' ERR
@@ -62,15 +62,15 @@ notice ""
 notice "running SPDK"
 notice ""
 vhost_run 0
-$rpc_py set_bdev_nvme_hotplug -e
-$rpc_py construct_split_vbdev Nvme0n1 16
+$rpc_py bdev_nvme_set_hotplug -e
+$rpc_py bdev_split_create Nvme0n1 16
 $rpc_py bdev_malloc_create 128 512 -b Malloc
-$rpc_py construct_split_vbdev Malloc 4
-$rpc_py construct_split_vbdev HotInNvme0n1 2
-$rpc_py construct_split_vbdev HotInNvme1n1 2
-$rpc_py construct_split_vbdev HotInNvme2n1 2
-$rpc_py construct_split_vbdev HotInNvme3n1 2
-$rpc_py get_bdevs
+$rpc_py bdev_split_create Malloc 4
+$rpc_py bdev_split_create HotInNvme0n1 2
+$rpc_py bdev_split_create HotInNvme1n1 2
+$rpc_py bdev_split_create HotInNvme2n1 2
+$rpc_py bdev_split_create HotInNvme3n1 2
+$rpc_py bdev_get_bdevs
 
 if [[ $scsi_hot_remove_test == 0 ]] && [[ $blk_hot_remove_test == 0 ]]; then
     pre_hot_attach_detach_test_case

@@ -33,10 +33,8 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-ifneq ($(MAKECMDGOALS),clean)
 ifeq ($(wildcard $(SPDK_ROOT_DIR)/mk/config.mk),)
-$(error mk/config.mk: file not found. Please run configure before 'make $(filter-out clean,$(MAKECMDGOALS))')
-endif
+$(error mk/config.mk: file not found. Please run configure before make)
 endif
 
 include $(SPDK_ROOT_DIR)/mk/config.mk
@@ -218,13 +216,17 @@ COMMON_CFLAGS += -pthread
 LDFLAGS += -pthread
 
 CFLAGS   += $(COMMON_CFLAGS) -Wno-pointer-sign -Wstrict-prototypes -Wold-style-definition -std=gnu99
-CXXFLAGS += $(COMMON_CFLAGS) -std=c++0x
+CXXFLAGS += $(COMMON_CFLAGS)
 
 SYS_LIBS += -lrt
 SYS_LIBS += -luuid
 SYS_LIBS += -lcrypto
 ifeq ($(CONFIG_LOG_BACKTRACE),y)
 SYS_LIBS += -lunwind
+endif
+
+ifeq ($(CONFIG_NVME_CUSE),y)
+SYS_LIBS += -lfuse3
 endif
 
 MAKEFLAGS += --no-print-directory

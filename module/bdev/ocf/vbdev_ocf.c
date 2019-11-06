@@ -162,13 +162,13 @@ static void
 remove_base_bdev(struct vbdev_ocf_base *base)
 {
 	if (base->attached) {
+		if (base->management_channel) {
+			spdk_put_io_channel(base->management_channel);
+		}
+
 		spdk_bdev_module_release_bdev(base->bdev);
 		spdk_bdev_close(base->desc);
 		base->attached = false;
-
-		if (base->management_channel && !base->is_cache) {
-			spdk_put_io_channel(base->management_channel);
-		}
 	}
 }
 
@@ -199,16 +199,17 @@ remove_core_cmpl(void *priv, int error)
 
 /* Try to lock cache, then remove core */
 static void
-remove_core_poll(struct vbdev_ocf *vbdev)
+remove_core_cache_lock_cmpl(ocf_cache_t cache, void *priv, int error)
 {
-	int rc;
+	struct vbdev_ocf *vbdev = (struct vbdev_ocf *)priv;
 
-	rc = ocf_mngt_cache_trylock(vbdev->ocf_cache);
-	if (rc) {
+	if (error) {
+		SPDK_ERRLOG("Error %d, can not lock cache instance %s\n",
+			    error, vbdev->name);
+		vbdev_ocf_mngt_continue(vbdev, error);
 		return;
 	}
 
-	vbdev_ocf_mngt_poll(vbdev, NULL);
 	ocf_mngt_cache_remove_core(vbdev->ocf_core, remove_core_cmpl, vbdev);
 }
 
@@ -217,7 +218,7 @@ static void
 detach_core(struct vbdev_ocf *vbdev)
 {
 	if (vbdev->ocf_cache && ocf_cache_is_running(vbdev->ocf_cache)) {
-		vbdev_ocf_mngt_poll(vbdev, remove_core_poll);
+		ocf_mngt_cache_lock(vbdev->ocf_cache, remove_core_cache_lock_cmpl, vbdev);
 	} else {
 		vbdev_ocf_mngt_continue(vbdev, 0);
 	}
@@ -252,14 +253,30 @@ stop_vbdev_cmpl(ocf_cache_t cache, void *priv, int error)
 
 	vbdev_ocf_queue_put(vbdev->cache_ctx->mngt_queue);
 	ocf_mngt_cache_unlock(cache);
-	spdk_put_io_channel(vbdev->cache.management_channel);
 
 	vbdev_ocf_mngt_continue(vbdev, error);
 }
 
 /* Try to lock cache, then stop it */
 static void
-stop_vbdev_poll(struct vbdev_ocf *vbdev)
+stop_vbdev_cache_lock_cmpl(ocf_cache_t cache, void *priv, int error)
+{
+	struct vbdev_ocf *vbdev = (struct vbdev_ocf *)priv;
+
+	if (error) {
+		SPDK_ERRLOG("Error %d, can not lock cache instance %s\n",
+			    error, vbdev->name);
+		vbdev_ocf_mngt_continue(vbdev, error);
+		return;
+	}
+
+	ocf_mngt_cache_stop(vbdev->ocf_cache, stop_vbdev_cmpl, vbdev);
+}
+
+/* Stop OCF cache object
+ * vbdev_ocf is not operational after this */
+static void
+stop_vbdev(struct vbdev_ocf *vbdev)
 {
 	if (!ocf_cache_is_running(vbdev->ocf_cache)) {
 		vbdev_ocf_mngt_continue(vbdev, 0);
@@ -274,38 +291,7 @@ stop_vbdev_poll(struct vbdev_ocf *vbdev)
 		return;
 	}
 
-	if (ocf_mngt_cache_trylock(vbdev->ocf_cache)) {
-		return;
-	}
-
-	vbdev_ocf_mngt_poll(vbdev, NULL);
-	ocf_mngt_cache_stop(vbdev->ocf_cache, stop_vbdev_cmpl, vbdev);
-}
-
-/* Stop OCF cache object
- * vbdev_ocf is not operational after this */
-static void
-stop_vbdev(struct vbdev_ocf *vbdev)
-{
-	vbdev_ocf_mngt_poll(vbdev, stop_vbdev_poll);
-}
-
-/* Wait for all OCF requests to finish */
-static void
-wait_for_requests_poll(struct vbdev_ocf *vbdev)
-{
-	if (ocf_cache_has_pending_requests(vbdev->ocf_cache)) {
-		return;
-	}
-
-	vbdev_ocf_mngt_continue(vbdev, 0);
-}
-
-/* Start waiting for OCF requests to finish */
-static void
-wait_for_requests(struct vbdev_ocf *vbdev)
-{
-	vbdev_ocf_mngt_poll(vbdev, wait_for_requests_poll);
+	ocf_mngt_cache_lock(vbdev->ocf_cache, stop_vbdev_cache_lock_cmpl, vbdev);
 }
 
 static void
@@ -318,31 +304,34 @@ flush_vbdev_cmpl(ocf_cache_t cache, void *priv, int error)
 }
 
 static void
-flush_vbdev_poll(struct vbdev_ocf *vbdev)
+flush_vbdev_cache_lock_cmpl(ocf_cache_t cache, void *priv, int error)
+{
+	struct vbdev_ocf *vbdev = (struct vbdev_ocf *)priv;
+
+	if (error) {
+		SPDK_ERRLOG("Error %d, can not lock cache instance %s\n",
+			    error, vbdev->name);
+		vbdev_ocf_mngt_continue(vbdev, error);
+		return;
+	}
+
+	ocf_mngt_cache_flush(vbdev->ocf_cache, flush_vbdev_cmpl, vbdev);
+}
+
+static void
+flush_vbdev(struct vbdev_ocf *vbdev)
 {
 	if (!ocf_cache_is_running(vbdev->ocf_cache)) {
 		vbdev_ocf_mngt_continue(vbdev, -EINVAL);
 		return;
 	}
 
-	if (ocf_mngt_cache_trylock(vbdev->ocf_cache)) {
-		return;
-	}
-
-	vbdev_ocf_mngt_poll(vbdev, NULL);
-	ocf_mngt_cache_flush(vbdev->ocf_cache, false, flush_vbdev_cmpl, vbdev);
+	ocf_mngt_cache_lock(vbdev->ocf_cache, flush_vbdev_cache_lock_cmpl, vbdev);
 }
 
-static void
-flush_vbdev(struct vbdev_ocf *vbdev)
-{
-	vbdev_ocf_mngt_poll(vbdev, flush_vbdev_poll);
-}
-
-/* Procedures called during unregister */
-vbdev_ocf_mngt_fn unregister_path[] = {
+/* Procedures called during dirty unregister */
+vbdev_ocf_mngt_fn unregister_path_dirty[] = {
 	flush_vbdev,
-	wait_for_requests,
 	stop_vbdev,
 	detach_cache,
 	close_cache_bdev,
@@ -352,17 +341,65 @@ vbdev_ocf_mngt_fn unregister_path[] = {
 	NULL
 };
 
+/* Procedures called during clean unregister */
+vbdev_ocf_mngt_fn unregister_path_clean[] = {
+	flush_vbdev,
+	detach_core,
+	close_core_bdev,
+	stop_vbdev,
+	detach_cache,
+	close_cache_bdev,
+	unregister_finish,
+	NULL
+};
+
 /* Start asynchronous management operation using unregister_path */
 static void
 unregister_cb(void *opaque)
 {
 	struct vbdev_ocf *vbdev = opaque;
+	vbdev_ocf_mngt_fn *unregister_path;
 	int rc;
+
+	unregister_path = vbdev->state.doing_clean_delete ?
+			  unregister_path_clean : unregister_path_dirty;
 
 	rc = vbdev_ocf_mngt_start(vbdev, unregister_path, NULL, NULL);
 	if (rc) {
 		SPDK_ERRLOG("Unable to unregister OCF bdev: %d\n", rc);
 		spdk_bdev_destruct_done(&vbdev->exp_bdev, rc);
+	}
+}
+
+/* Clean remove case - remove core and then cache, this order
+ * will remove instance permanently */
+static void
+_vbdev_ocf_destruct_clean(struct vbdev_ocf *vbdev)
+{
+	if (vbdev->core.attached) {
+		detach_core(vbdev);
+		close_core_bdev(vbdev);
+	}
+
+	if (vbdev->cache.attached) {
+		detach_cache(vbdev);
+		close_cache_bdev(vbdev);
+	}
+}
+
+/* Dirty shutdown/hot remove case - remove cache and then core, this order
+ * will allow us to recover this instance in the future */
+static void
+_vbdev_ocf_destruct_dirty(struct vbdev_ocf *vbdev)
+{
+	if (vbdev->cache.attached) {
+		detach_cache(vbdev);
+		close_cache_bdev(vbdev);
+	}
+
+	if (vbdev->core.attached) {
+		detach_core(vbdev);
+		close_core_bdev(vbdev);
 	}
 }
 
@@ -376,6 +413,13 @@ vbdev_ocf_destruct(void *opaque)
 	if (vbdev->state.doing_finish) {
 		return -EALREADY;
 	}
+
+	if (vbdev->state.starting && !vbdev->state.started) {
+		/* Prevent before detach cache/core during register path of
+		  this bdev */
+		return -EBUSY;
+	}
+
 	vbdev->state.doing_finish = true;
 
 	if (vbdev->state.started) {
@@ -384,13 +428,10 @@ vbdev_ocf_destruct(void *opaque)
 		return 1;
 	}
 
-	if (vbdev->cache.attached) {
-		detach_cache(vbdev);
-		close_cache_bdev(vbdev);
-	}
-	if (vbdev->core.attached) {
-		detach_core(vbdev);
-		close_core_bdev(vbdev);
+	if (vbdev->state.doing_clean_delete) {
+		_vbdev_ocf_destruct_clean(vbdev);
+	} else {
+		_vbdev_ocf_destruct_dirty(vbdev);
 	}
 
 	return 0;
@@ -413,6 +454,17 @@ vbdev_ocf_delete(struct vbdev_ocf *vbdev, void (*cb)(void *, int), void *cb_arg)
 
 	return rc;
 }
+
+/* Remove cores permanently and then stop OCF cache and unregister SPDK bdev */
+int
+vbdev_ocf_delete_clean(struct vbdev_ocf *vbdev, void (*cb)(void *, int),
+		       void *cb_arg)
+{
+	vbdev->state.doing_clean_delete = true;
+
+	return vbdev_ocf_delete(vbdev, cb, cb_arg);
+}
+
 
 /* If vbdev is online, return its object */
 struct vbdev_ocf *
@@ -668,7 +720,7 @@ vbdev_ocf_write_json_config(struct spdk_bdev *bdev, struct spdk_json_write_ctx *
 
 	spdk_json_write_object_begin(w);
 
-	spdk_json_write_named_string(w, "method", "construct_ocf_bdev");
+	spdk_json_write_named_string(w, "method", "bdev_ocf_create");
 
 	spdk_json_write_named_object_begin(w, "params");
 	spdk_json_write_named_string(w, "name", vbdev->name);
@@ -730,6 +782,9 @@ vbdev_ocf_ctx_queue_stop(ocf_queue_t q)
 		spdk_put_io_channel(qctx->cache_ch);
 		spdk_put_io_channel(qctx->core_ch);
 		spdk_poller_unregister(&qctx->poller);
+		if (qctx->allocated) {
+			free(qctx);
+		}
 	}
 }
 
@@ -779,6 +834,7 @@ io_device_destroy_cb(void *io_device, void *ctx_buf)
 		memcpy(copy, qctx, sizeof(*copy));
 		spdk_poller_unregister(&qctx->poller);
 		copy->poller = spdk_poller_register(queue_poll, copy, 0);
+		copy->allocated = true;
 	} else {
 		SPDK_ERRLOG("Unable to stop OCF queue properly: %s\n",
 			    spdk_strerror(ENOMEM));
@@ -829,13 +885,17 @@ const struct ocf_queue_ops mngt_queue_ops = {
 	.stop = vbdev_ocf_ctx_mngt_queue_stop,
 };
 
+static void
+clear_starting_indicator_vbdev(struct vbdev_ocf *vbdev)
+{
+	vbdev->state.starting = false;
+}
+
 /* Create exported spdk object */
 static void
 finish_register(struct vbdev_ocf *vbdev)
 {
 	int result;
-
-	vbdev->cache.management_channel = vbdev->cache_ctx->management_channel;
 
 	/* Copy properties of the base bdev */
 	vbdev->exp_bdev.blocklen = vbdev->core.bdev->blocklen;
@@ -855,7 +915,11 @@ finish_register(struct vbdev_ocf *vbdev)
 				sizeof(struct vbdev_ocf_qcxt), vbdev->name);
 	result = spdk_bdev_register(&vbdev->exp_bdev);
 	if (result) {
-		SPDK_ERRLOG("Could not register exposed bdev\n");
+		SPDK_ERRLOG("Could not register exposed bdev %s\n",
+			    vbdev->name);
+		clear_starting_indicator_vbdev(vbdev);
+		vbdev_ocf_mngt_stop(vbdev, unregister_path_dirty, result);
+		return;
 	} else {
 		vbdev->state.started = true;
 	}
@@ -871,25 +935,31 @@ add_core_cmpl(ocf_cache_t cache, ocf_core_t core, void *priv, int error)
 	ocf_mngt_cache_unlock(cache);
 
 	if (error) {
-		SPDK_ERRLOG("Failed to add core device to cache instance\n");
+		SPDK_ERRLOG("Error %d, failed to add core device to cache instance %s,"
+			    "starting rollback\n", error, vbdev->name);
+		clear_starting_indicator_vbdev(vbdev);
+		vbdev_ocf_mngt_stop(vbdev, unregister_path_dirty, error);
+		return;
 	} else {
 		vbdev->ocf_core = core;
 		vbdev->core.id  = ocf_core_get_id(core);
 	}
 
-	vbdev->core.management_channel = spdk_bdev_get_io_channel(vbdev->core.desc);
 	vbdev_ocf_mngt_continue(vbdev, error);
 }
 
 /* Try to lock cache, then add core */
 static void
-add_core_poll(struct vbdev_ocf *vbdev)
+add_core_cache_lock_cmpl(ocf_cache_t cache, void *priv, int error)
 {
-	if (ocf_mngt_cache_trylock(vbdev->ocf_cache)) {
-		return;
-	}
+	struct vbdev_ocf *vbdev = (struct vbdev_ocf *)priv;
 
-	vbdev_ocf_mngt_poll(vbdev, NULL);
+	if (error) {
+		SPDK_ERRLOG("Error %d, can not lock cache instance %s,"
+			    "starting rollback\n", error, vbdev->name);
+		clear_starting_indicator_vbdev(vbdev);
+		vbdev_ocf_mngt_stop(vbdev, unregister_path_dirty, error);
+	}
 	ocf_mngt_cache_add_core(vbdev->ocf_cache, &vbdev->cfg.core, add_core_cmpl, vbdev);
 }
 
@@ -897,7 +967,7 @@ add_core_poll(struct vbdev_ocf *vbdev)
 static void
 add_core(struct vbdev_ocf *vbdev)
 {
-	vbdev_ocf_mngt_poll(vbdev, add_core_poll);
+	ocf_mngt_cache_lock(vbdev->ocf_cache, add_core_cache_lock_cmpl, vbdev);
 }
 
 static void
@@ -906,6 +976,14 @@ start_cache_cmpl(ocf_cache_t cache, void *priv, int error)
 	struct vbdev_ocf *vbdev = priv;
 
 	ocf_mngt_cache_unlock(cache);
+
+	if (error) {
+		SPDK_ERRLOG("Error %d during start cache %s, starting rollback\n",
+			    error, vbdev->name);
+		clear_starting_indicator_vbdev(vbdev);
+		vbdev_ocf_mngt_stop(vbdev, unregister_path_dirty, error);
+		return;
+	}
 
 	vbdev_ocf_mngt_continue(vbdev, error);
 }
@@ -942,8 +1020,7 @@ start_cache(struct vbdev_ocf *vbdev)
 	int rc;
 
 	if (vbdev->ocf_cache) {
-		vbdev->mngt_ctx.status = -EALREADY;
-		vbdev_ocf_mngt_stop(vbdev);
+		vbdev_ocf_mngt_stop(vbdev, NULL, -EALREADY);
 		return;
 	}
 
@@ -961,8 +1038,8 @@ start_cache(struct vbdev_ocf *vbdev)
 
 	vbdev->cache_ctx = calloc(1, sizeof(struct vbdev_ocf_cache_ctx));
 	if (vbdev->cache_ctx == NULL) {
-		vbdev->mngt_ctx.status = -ENOMEM;
-		vbdev_ocf_mngt_stop(vbdev);
+		clear_starting_indicator_vbdev(vbdev);
+		vbdev_ocf_mngt_stop(vbdev, unregister_path_dirty, -ENOMEM);
 		return;
 	}
 
@@ -971,9 +1048,8 @@ start_cache(struct vbdev_ocf *vbdev)
 
 	rc = ocf_mngt_cache_start(vbdev_ocf_ctx, &vbdev->ocf_cache, &vbdev->cfg.cache);
 	if (rc) {
-		vbdev_ocf_cache_ctx_put(vbdev->cache_ctx);
-		vbdev->mngt_ctx.status = rc;
-		vbdev_ocf_mngt_stop(vbdev);
+		clear_starting_indicator_vbdev(vbdev);
+		vbdev_ocf_mngt_stop(vbdev, unregister_path_dirty, rc);
 		return;
 	}
 
@@ -983,14 +1059,10 @@ start_cache(struct vbdev_ocf *vbdev)
 	rc = create_management_queue(vbdev);
 	if (rc) {
 		SPDK_ERRLOG("Unable to create mngt_queue: %d\n", rc);
-		vbdev_ocf_cache_ctx_put(vbdev->cache_ctx);
-		vbdev->mngt_ctx.status = rc;
-		vbdev_ocf_mngt_stop(vbdev);
+		clear_starting_indicator_vbdev(vbdev);
+		vbdev_ocf_mngt_stop(vbdev, unregister_path_dirty, rc);
 		return;
 	}
-
-	vbdev->cache_ctx->management_channel = spdk_bdev_get_io_channel(vbdev->cache.desc);
-	vbdev->cache.management_channel = vbdev->cache_ctx->management_channel;
 
 	if (vbdev->cfg.loadq) {
 		ocf_mngt_cache_load(vbdev->ocf_cache, &vbdev->cfg.device, start_cache_cmpl, vbdev);
@@ -1018,6 +1090,7 @@ register_vbdev(struct vbdev_ocf *vbdev, vbdev_ocf_mngt_callback cb, void *cb_arg
 		return;
 	}
 
+	vbdev->state.starting = true;
 	rc = vbdev_ocf_mngt_start(vbdev, register_path, cb, cb_arg);
 	if (rc) {
 		cb(rc, vbdev, cb_arg);
@@ -1051,7 +1124,6 @@ init_vbdev_config(struct vbdev_ocf *vbdev)
 	/* TODO [cache line size] */
 	cfg->device.cache_line_size = ocf_cache_line_size_4;
 	cfg->device.force = true;
-	cfg->device.min_free_ram = 0;
 	cfg->device.perform_test = false;
 	cfg->device.discard_on_start = false;
 
@@ -1278,6 +1350,7 @@ attach_base(struct vbdev_ocf_base *base)
 		struct vbdev_ocf_base *existing = get_other_cache_base(base);
 		if (existing) {
 			base->desc = existing->desc;
+			base->management_channel = existing->management_channel;
 			base->attached = true;
 			return 0;
 		}
@@ -1295,6 +1368,14 @@ attach_base(struct vbdev_ocf_base *base)
 		SPDK_ERRLOG("Unable to claim device '%s'\n", base->name);
 		spdk_bdev_close(base->desc);
 		return status;
+	}
+
+	base->management_channel = spdk_bdev_get_io_channel(base->desc);
+	if (!base->management_channel) {
+		SPDK_ERRLOG("Unable to get io channel '%s'\n", base->name);
+		spdk_bdev_module_release_bdev(base->bdev);
+		spdk_bdev_close(base->desc);
+		return -ENOMEM;
 	}
 
 	base->attached = true;
@@ -1521,7 +1602,7 @@ metadata_probe_cb(void *priv, int rc,
 
 	if (rc) {
 		/* -ENODATA means device does not have cache metadata on it */
-		if (rc != -ENODATA) {
+		if (rc != -OCF_ERR_NO_METADATA) {
 			ctx->result = rc;
 		}
 		examine_ctx_put(ctx);

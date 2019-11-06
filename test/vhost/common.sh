@@ -65,7 +65,7 @@ function message()
 
 	local msg_type="$1"
 	shift
-	echo -e "${msg_type}${verbose_out}: $@"
+	echo -e "${msg_type}${verbose_out}: $*"
 }
 
 function fail()
@@ -111,12 +111,12 @@ function vhost_run()
 {
 	local vhost_name="$1"
 
-	shift
-
 	if [[ -z "$vhost_name" ]]; then
 		error "vhost name must be provided to vhost_run"
 		return 1
 	fi
+
+	shift
 
 	local vhost_dir="$(get_vhost_dir $vhost_name)"
 	local vhost_app="$rootdir/app/vhost/vhost"
@@ -124,7 +124,7 @@ function vhost_run()
 	local vhost_pid_file="$vhost_dir/vhost.pid"
 	local vhost_socket="$vhost_dir/usvhost"
 	notice "starting vhost app in background"
-	[[ -r "$vhost_pid_file" ]] && vhost_kill 0 $vhost_name
+	[[ -r "$vhost_pid_file" ]] && vhost_kill $vhost_name
 	[[ -d $vhost_dir ]] && rm -f $vhost_dir/*
 	mkdir -p $vhost_dir
 
@@ -133,7 +133,7 @@ function vhost_run()
 		return 1
 	fi
 
-	local cmd="$vhost_app -r $vhost_dir/rpc.sock $2"
+	local cmd="$vhost_app -r $vhost_dir/rpc.sock $@"
 
 	notice "Loging to:   $vhost_log_file"
 	notice "Socket:      $vhost_socket"
@@ -147,7 +147,7 @@ function vhost_run()
 	notice "waiting for app to run..."
 	waitforlisten "$vhost_pid" "$vhost_dir/rpc.sock"
 	#do not generate nvmes if pci access is disabled
-	if [[ -z "$no_pci" ]]; then
+	if [[ "$cmd" != *"--no-pci"* ]] && [[ "$cmd" != *"-u"* ]]; then
 		$rootdir/scripts/gen_nvme.sh "--json" | $rootdir/scripts/rpc.py\
 		 -s $vhost_dir/rpc.sock load_subsystem_config
 	fi
@@ -707,7 +707,7 @@ function vm_setup()
 				fi
 
 				# Create disk file if it not exist or it is smaller than 1G
-				if ( [[ -f $raw_disk ]] && [[ $(stat --printf="%s" $raw_disk) -lt $((1024 * 1024 * 1024)) ]] ) || \
+				if { [[ -f $raw_disk ]] && [[ $(stat --printf="%s" $raw_disk) -lt $((1024 * 1024 * 1024)) ]]; } || \
 					[[ ! -e $raw_disk ]]; then
 					if [[ $raw_disk =~ /dev/.* ]]; then
 						error \
@@ -901,7 +901,7 @@ function vm_wait_for_boot()
 
 	notice "Waiting for VMs to boot"
 	shift
-	if [[ "$@" == "" ]]; then
+	if [[ "$*" == "" ]]; then
 		local vms_to_check="$VM_DIR/[0-9]*"
 	else
 		local vms_to_check=""
@@ -982,13 +982,13 @@ function vm_start_fio_server()
 function vm_check_scsi_location()
 {
 	# Script to find wanted disc
-	local script='shopt -s nullglob; \
-	for entry in /sys/block/sd*; do \
-		disk_type="$(cat $entry/device/vendor)"; \
-		if [[ $disk_type == INTEL* ]] || [[ $disk_type == RAWSCSI* ]] || [[ $disk_type == LIO-ORG* ]]; then \
-			fname=$(basename $entry); \
-			echo -n " $fname"; \
-		fi; \
+	local script='shopt -s nullglob;
+	for entry in /sys/block/sd*; do
+		disk_type="$(cat $entry/device/vendor)";
+		if [[ $disk_type == INTEL* ]] || [[ $disk_type == RAWSCSI* ]] || [[ $disk_type == LIO-ORG* ]]; then
+			fname=$(basename $entry);
+			echo -n " $fname";
+		fi;
 	done'
 
 	SCSI_DISK="$(echo "$script" | vm_exec $1 bash -s)"

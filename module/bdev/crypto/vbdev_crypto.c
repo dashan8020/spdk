@@ -85,13 +85,13 @@ static pthread_mutex_t g_device_qp_lock = PTHREAD_MUTEX_INITIALIZER;
  * of the poller. It is mainly a performance knob as it effectively determines how
  * much work the poller has to do.  However even that can vary between crypto drivers
  * as the AESNI_MB driver for example does all the crypto work on dequeue whereas the
- * QAT drvier just dequeues what has been completed already.
+ * QAT driver just dequeues what has been completed already.
  */
 #define MAX_DEQUEUE_BURST_SIZE	64
 
 /* When enqueueing, we need to supply the crypto driver with an array of pointers to
  * operation structs. As each of these can be max 512B, we can adjust the CRYPTO_MAX_IO
- * value in conjunction with the the other defines to make sure we're not using crazy amounts
+ * value in conjunction with the other defines to make sure we're not using crazy amounts
  * of memory. All of these numbers can and probably should be adjusted based on the
  * workload. By default we'll use the worst case (smallest) block size for the
  * minimum number of array entries. As an example, a CRYPTO_MAX_IO size of 64K with 512B
@@ -101,13 +101,13 @@ static pthread_mutex_t g_device_qp_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* The number of MBUFS we need must be a power of two and to support other small IOs
  * in addition to the limits mentioned above, we go to the next power of two. It is
- * big number because it is one mempool for source and desitnation mbufs. It may
+ * big number because it is one mempool for source and destination mbufs. It may
  * need to be bigger to support multiple crypto drivers at once.
  */
 #define NUM_MBUFS		32768
 #define POOL_CACHE_SIZE		256
-#define NUM_SESSIONS		1024
-#define SESS_MEMPOOL_CACHE_SIZE 256
+#define NUM_SESSIONS		2
+#define SESS_MEMPOOL_CACHE_SIZE 0
 
 /* This is the max number of IOs we can supply to any crypto device QP at one time.
  * It can vary between drivers.
@@ -129,9 +129,7 @@ static void vbdev_crypto_examine(struct spdk_bdev *bdev);
 static int vbdev_crypto_claim(struct spdk_bdev *bdev);
 static void vbdev_crypto_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io);
 
-/* list of crypto_bdev names and their base bdevs via configuration file.
- * Used so we can parse the conf once at init and use this list in examine().
- */
+/* List of crypto_bdev names and their base bdevs via configuration file. */
 struct bdev_names {
 	char			*vbdev_name;	/* name of the vbdev to create */
 	char			*bdev_name;	/* base bdev name */
@@ -189,7 +187,7 @@ struct crypto_bdev_io {
 	struct spdk_bdev_io *orig_io;			/* the original IO */
 	struct spdk_bdev_io *read_io;			/* the read IO we issued */
 
-	/* Used for the single contigous buffer that serves as the crypto destination target for writes */
+	/* Used for the single contiguous buffer that serves as the crypto destination target for writes */
 	uint64_t cry_num_blocks;			/* num of blocks for the contiguous buffer */
 	uint64_t cry_offset_blocks;			/* block offset on media */
 	struct iovec cry_iov;				/* iov representing contig write buffer */
@@ -253,7 +251,7 @@ create_vbdev_dev(uint8_t index, uint16_t num_lcores)
 #endif
 	};
 
-	/* Pre-setup all pottential qpairs now and assign them in the channel
+	/* Pre-setup all potential qpairs now and assign them in the channel
 	 * callback. If we were to create them there, we'd have to stop the
 	 * entire device affecting all other threads that might be using it
 	 * even on other queue pairs.
@@ -325,7 +323,6 @@ vbdev_crypto_init_crypto_drivers(void)
 	struct vbdev_dev *tmp_dev;
 	unsigned int max_sess_size = 0, sess_size;
 	uint16_t num_lcores = rte_lcore_count();
-	uint32_t cache_size;
 
 	/* Only the first call, via RPC or module init should init the crypto drivers. */
 	if (g_session_mp != NULL) {
@@ -359,10 +356,10 @@ vbdev_crypto_init_crypto_drivers(void)
 		}
 	}
 
-	cache_size = spdk_min(RTE_MEMPOOL_CACHE_MAX_SIZE, NUM_SESSIONS / 2 / num_lcores);
 #if RTE_VERSION >= RTE_VERSION_NUM(19, 02, 0, 0)
-	g_session_mp_priv = rte_mempool_create("session_mp_priv", NUM_SESSIONS, max_sess_size, cache_size,
-					       0, NULL, NULL, NULL, NULL, SOCKET_ID_ANY, 0);
+	g_session_mp_priv = rte_mempool_create("session_mp_priv", NUM_SESSIONS, max_sess_size,
+					       SESS_MEMPOOL_CACHE_SIZE, 0, NULL, NULL, NULL,
+					       NULL, SOCKET_ID_ANY, 0);
 	if (g_session_mp_priv == NULL) {
 		SPDK_ERRLOG("Cannot create private session pool max size 0x%x\n", max_sess_size);
 		return -ENOMEM;
@@ -370,10 +367,11 @@ vbdev_crypto_init_crypto_drivers(void)
 
 	g_session_mp = rte_cryptodev_sym_session_pool_create(
 			       "session_mp",
-			       NUM_SESSIONS, 0, cache_size, 0,
+			       NUM_SESSIONS, 0, SESS_MEMPOOL_CACHE_SIZE, 0,
 			       SOCKET_ID_ANY);
 #else
-	g_session_mp = rte_mempool_create("session_mp", NUM_SESSIONS, max_sess_size, cache_size,
+	g_session_mp = rte_mempool_create("session_mp", NUM_SESSIONS, max_sess_size,
+					  SESS_MEMPOOL_CACHE_SIZE,
 					  0, NULL, NULL, NULL, NULL, SOCKET_ID_ANY, 0);
 #endif
 	if (g_session_mp == NULL) {
@@ -452,7 +450,7 @@ _crypto_operation_complete(struct spdk_bdev_io *bdev_io)
 	if (bdev_io->type == SPDK_BDEV_IO_TYPE_READ) {
 
 		/* Complete the original IO and then free the one that we created
-		 * as a result of issuing an IO via submit_reqeust.
+		 * as a result of issuing an IO via submit_request.
 		 */
 		if (bdev_io->internal.status != SPDK_BDEV_IO_STATUS_FAILED) {
 			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
@@ -630,10 +628,11 @@ _crypto_operation(struct spdk_bdev_io *bdev_io, enum rte_crypto_cipher_operation
 		}
 	}
 
-	/* Allocate crypto operations. */
-#ifdef DEBUG
-	memset(crypto_ops, 0, sizeof(crypto_ops));
+#ifdef __clang_analyzer__
+	/* silence scan-build false positive */
+	SPDK_CLANG_ANALYZER_PREINIT_PTR_ARRAY(crypto_ops, MAX_ENQUEUE_ARRAY_SIZE, 0x1000);
 #endif
+	/* Allocate crypto operations. */
 	allocated = rte_crypto_op_bulk_alloc(g_crypto_op_mp,
 					     RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 					     crypto_ops, cryop_cnt);
@@ -676,7 +675,7 @@ _crypto_operation(struct spdk_bdev_io *bdev_io, enum rte_crypto_cipher_operation
 	 * of crypto operations is straightforward. We build both the op, the mbuf and the
 	 * dst_mbuf in our local arrays by looping through the length of the bdev IO and
 	 * picking off LBA sized blocks of memory from the IOVs as we walk through them. Each
-	 * LBA sized chunck of memory will correspond 1:1 to a crypto operation and a single
+	 * LBA sized chunk of memory will correspond 1:1 to a crypto operation and a single
 	 * mbuf per crypto operation.
 	 */
 	total_remaining = total_length;
@@ -1112,7 +1111,7 @@ vbdev_crypto_get_io_channel(void *ctx)
 	struct vbdev_crypto *crypto_bdev = (struct vbdev_crypto *)ctx;
 
 	/* The IO channel code will allocate a channel for us which consists of
-	 * the SPDK cahnnel structure plus the size of our crypto_io_channel struct
+	 * the SPDK channel structure plus the size of our crypto_io_channel struct
 	 * that we passed in when we registered our IO device. It will then call
 	 * our channel create callback to populate any elements that we need to
 	 * update.
@@ -1120,7 +1119,7 @@ vbdev_crypto_get_io_channel(void *ctx)
 	return spdk_get_io_channel(crypto_bdev);
 }
 
-/* This is the output for get_bdevs() for this vbdev */
+/* This is the output for bdev_get_bdevs() for this vbdev */
 static int
 vbdev_crypto_dump_info_json(void *ctx, struct spdk_json_write_ctx *w)
 {
@@ -1184,7 +1183,7 @@ crypto_bdev_ch_create_cb(void *io_device, void *ctx_buf)
 	pthread_mutex_unlock(&g_device_qp_lock);
 	assert(crypto_ch->device_qp);
 
-	/* We use this queue to track outstanding IO in our lyaer. */
+	/* We use this queue to track outstanding IO in our layer. */
 	TAILQ_INIT(&crypto_ch->pending_cry_ios);
 
 	return 0;
@@ -1320,7 +1319,7 @@ create_crypto_disk(const char *bdev_name, const char *vbdev_name,
 	return rc;
 }
 
-/* Called at driver init time, parses config file to preapre for examine calls,
+/* Called at driver init time, parses config file to prepare for examine calls,
  * also fully initializes the crypto drivers.
  */
 static int

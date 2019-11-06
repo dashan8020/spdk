@@ -21,7 +21,7 @@
             "split_size_mb": 0,
             "split_count": 4
           },
-          "method": "construct_split_vbdev"
+          "method": "bdev_split_create"
         },
         {
           "params": {
@@ -78,7 +78,7 @@
           "method": "bdev_malloc_create"
         },
         {
-          "method": "construct_raid_bdev",
+          "method": "bdev_raid_create",
           "params": {
             "name": "RaidBdev0",
             "strip_size": 128,
@@ -90,7 +90,7 @@
           }
         },
         {
-          "method": "construct_raid_bdev",
+          "method": "bdev_raid_create",
           "params": {
             "name": "RaidBdev1",
             "strip_size": 128,
@@ -102,7 +102,7 @@
           }
         },
         {
-          "method": "construct_raid_bdev",
+          "method": "bdev_raid_create",
           "params": {
             "name": "RaidBdev2",
             "strip_size": 128,
@@ -131,7 +131,7 @@
             "cpumask": "0x1",
             "ctrlr": "vhost.0"
           },
-          "method": "construct_vhost_scsi_controller"
+          "method": "vhost_create_scsi_controller"
         },
         {
           "params": {
@@ -139,7 +139,7 @@
             "bdev_name": "Malloc0",
             "ctrlr": "vhost.0"
           },
-          "method": "add_vhost_scsi_lun"
+          "method": "vhost_scsi_controller_add_target"
         },
         {
           "params": {
@@ -148,7 +148,7 @@
             "ctrlr": "vhost.1",
             "cpumask": "0x1"
           },
-          "method": "construct_vhost_blk_controller"
+          "method": "vhost_create_blk_controller"
         }
       ]
     }

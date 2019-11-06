@@ -407,7 +407,6 @@ ftl_get_io_channel(const struct spdk_ftl_dev *dev)
 	return NULL;
 }
 
-
 int
 ftl_io_erase(struct ftl_io *io)
 {
@@ -770,8 +769,7 @@ static void
 ftl_wptr_pad_band(struct ftl_wptr *wptr)
 {
 	struct spdk_ftl_dev *dev = wptr->dev;
-	size_t size = ftl_rwb_num_acquired(dev->rwb, FTL_RWB_TYPE_INTERNAL) +
-		      ftl_rwb_num_acquired(dev->rwb, FTL_RWB_TYPE_USER);
+	size_t size = ftl_rwb_num_pending(dev->rwb);
 	size_t blocks_left, rwb_size, pad_size;
 
 	blocks_left = ftl_wptr_user_lbks_left(wptr);
@@ -788,8 +786,7 @@ static void
 ftl_wptr_process_shutdown(struct ftl_wptr *wptr)
 {
 	struct spdk_ftl_dev *dev = wptr->dev;
-	size_t size = ftl_rwb_num_acquired(dev->rwb, FTL_RWB_TYPE_INTERNAL) +
-		      ftl_rwb_num_acquired(dev->rwb, FTL_RWB_TYPE_USER);
+	size_t size = ftl_rwb_num_pending(dev->rwb);
 	size_t num_active = dev->xfer_size * ftl_rwb_get_active_batches(dev->rwb);
 
 	num_active = num_active ? num_active : dev->xfer_size;
@@ -2096,13 +2093,9 @@ _ftl_flush(void *ctx)
 }
 
 int
-spdk_ftl_flush(struct spdk_ftl_dev *dev, spdk_ftl_fn cb_fn, void *cb_arg)
+ftl_flush_rwb(struct spdk_ftl_dev *dev, spdk_ftl_fn cb_fn, void *cb_arg)
 {
 	struct ftl_flush *flush;
-
-	if (!dev->initialized) {
-		return -EBUSY;
-	}
 
 	flush = ftl_flush_init(dev, cb_fn, cb_arg);
 	if (!flush) {
@@ -2111,6 +2104,16 @@ spdk_ftl_flush(struct spdk_ftl_dev *dev, spdk_ftl_fn cb_fn, void *cb_arg)
 
 	spdk_thread_send_msg(ftl_get_core_thread(dev), _ftl_flush, flush);
 	return 0;
+}
+
+int
+spdk_ftl_flush(struct spdk_ftl_dev *dev, spdk_ftl_fn cb_fn, void *cb_arg)
+{
+	if (!dev->initialized) {
+		return -EBUSY;
+	}
+
+	return ftl_flush_rwb(dev, cb_fn, cb_arg);
 }
 
 static void
@@ -2125,6 +2128,12 @@ ftl_process_anm_event(struct ftl_anm_event *event)
 	struct spdk_ftl_dev *dev = event->dev;
 	struct ftl_band *band;
 	size_t lbkoff;
+
+	/* Drop any ANM requests until the device is initialized */
+	if (!dev->initialized) {
+		ftl_anm_event_complete(event);
+		return;
+	}
 
 	if (!ftl_check_core_thread(dev)) {
 		spdk_thread_send_msg(ftl_get_core_thread(dev), _ftl_process_anm_event, event);

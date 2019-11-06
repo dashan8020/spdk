@@ -79,7 +79,8 @@ if [ $(uname -s) = Linux ]; then
 	# discover if it is OCSSD or not so load the kernel driver first.
 
 
-	for dev in $(find /dev -maxdepth 1 -regex '/dev/nvme[0-9]+'); do
+	while IFS= read -r -d '' dev
+	do
 		# Send Open Channel 2.0 Geometry opcode "0xe2" - not supported by NVMe device.
 		if nvme admin-passthru $dev --namespace-id=1 --data-len=4096  --opcode=0xe2 --read >/dev/null; then
 			bdf="$(basename $(readlink -e /sys/class/nvme/${dev#/dev/}/device))"
@@ -87,7 +88,7 @@ if [ $(uname -s) = Linux ]; then
 			PCI_BLACKLIST+=" $bdf"
 			OCSSD_PCI_DEVICES+=" $bdf"
 		fi
-	done
+	done <   <(find /dev -maxdepth 1 -regex '/dev/nvme[0-9]+' -print0)
 
 	export OCSSD_PCI_DEVICES
 
@@ -133,6 +134,10 @@ if [[ $SPDK_TEST_CRYPTO -eq 1 || $SPDK_TEST_REDUCE -eq 1 ]]; then
 	fi
 fi
 
+# Revert existing OPAL to factory settings that may have been left from earlier failed tests.
+# This ensures we won't hit any unexpected failures due to NVMe SSDs being locked.
+opal_revert_cleanup
+
 #####################
 # Unit Tests
 #####################
@@ -151,6 +156,8 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
 	run_test suite test/env/env.sh
 	run_test suite test/rpc_client/rpc_client.sh
 	run_test suite ./test/json_config/json_config.sh
+	run_test suite test/json_config/alias_rpc/alias_rpc.sh
+	run_test suite test/spdkcli/tcp.sh
 
 	if [ $SPDK_TEST_BLOCKDEV -eq 1 ]; then
 		run_test suite test/bdev/blockdev.sh
@@ -169,16 +176,18 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
 
 	if [ $SPDK_TEST_NVME -eq 1 ]; then
 		run_test suite test/nvme/nvme.sh
-		if [ $SPDK_TEST_NVME_CLI -eq 1 ]; then
+		if [[ $SPDK_TEST_NVME_CLI -eq 1 ]]; then
 			run_test suite test/nvme/spdk_nvme_cli.sh
+		fi
+		if [[ $SPDK_TEST_NVME_CUSE -eq 1 ]]; then
+			run_test suite test/nvme/spdk_nvme_cli_cuse.sh
 		fi
 		# Only test hotplug without ASAN enabled. Since if it is
 		# enabled, it catches SEGV earlier than our handler which
 		# breaks the hotplug logic.
-		# Temporary workaround for issue #542, annotated for no VM image.
-		#if [ $SPDK_RUN_ASAN -eq 0 ]; then
-		#	run_test suite test/nvme/hotplug.sh intel
-		#fi
+		if [ $SPDK_RUN_ASAN -eq 0 ]; then
+			run_test suite test/nvme/hotplug.sh intel
+		fi
 	fi
 
 	if [ $SPDK_TEST_IOAT -eq 1 ]; then
@@ -202,6 +211,7 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
 	if [ $SPDK_TEST_BLOBFS -eq 1 ]; then
 		run_test suite ./test/blobfs/rocksdb/rocksdb.sh
 		run_test suite ./test/blobstore/blobstore.sh
+		run_test suite ./test/blobfs/blobfs.sh
 	fi
 
 	if [ $SPDK_TEST_NVMF -eq 1 ]; then
@@ -245,7 +255,7 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
 		run_test suite ./test/ocf/ocf.sh
 	fi
 
-	if [ $SPDK_TEST_BDEV_FTL -eq 1 ]; then
+	if [ $SPDK_TEST_FTL -eq 1 ]; then
 		run_test suite ./test/ftl/ftl.sh
 	fi
 
@@ -256,6 +266,10 @@ if [ $SPDK_RUN_FUNCTIONAL_TEST -eq 1 ]; then
         if [ $SPDK_TEST_REDUCE -eq 1 ]; then
                 run_test suite ./test/compress/compress.sh
         fi
+
+	if [ $SPDK_TEST_OPAL -eq 1 ]; then
+		run_test suite ./test/nvme/nvme_opal.sh
+	fi
 fi
 
 timing_enter cleanup

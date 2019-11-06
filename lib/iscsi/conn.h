@@ -67,6 +67,20 @@
 #define TRACE_ISCSI_TASK_EXECUTED		SPDK_TPOINT_ID(TRACE_GROUP_ISCSI, 0x6)
 #define TRACE_ISCSI_PDU_COMPLETED		SPDK_TPOINT_ID(TRACE_GROUP_ISCSI, 0x7)
 
+enum iscsi_pdu_recv_state {
+	/* Ready to wait for PDU */
+	ISCSI_PDU_RECV_STATE_AWAIT_PDU_READY,
+
+	/* Active connection waiting for any PDU header */
+	ISCSI_PDU_RECV_STATE_AWAIT_PDU_HDR,
+
+	/* Active connection waiting for payload */
+	ISCSI_PDU_RECV_STATE_AWAIT_PDU_PAYLOAD,
+
+	/* Active connection does not wait for payload */
+	ISCSI_PDU_RECV_STATE_ERROR,
+};
+
 struct spdk_poller;
 
 struct spdk_iscsi_conn {
@@ -88,10 +102,17 @@ struct spdk_iscsi_conn {
 
 	enum iscsi_connection_state	state;
 	int				login_phase;
+	bool				is_logged_out;
+	struct spdk_iscsi_pdu		*login_rsp_pdu;
 
 	uint64_t	last_flush;
 	uint64_t	last_fill;
 	uint64_t	last_nopin;
+
+	/* Timer used to destroy connection after requesting logout if
+	 *  initiator does not send logout request.
+	 */
+	struct spdk_poller *logout_request_timer;
 
 	/* Timer used to destroy connection after logout if initiator does
 	 *  not close the connection.
@@ -103,6 +124,7 @@ struct spdk_iscsi_conn {
 	struct spdk_poller *shutdown_timer;
 
 	struct spdk_iscsi_pdu *pdu_in_progress;
+	enum iscsi_pdu_recv_state pdu_recv_state;
 
 	TAILQ_HEAD(, spdk_iscsi_pdu) write_pdu_list;
 	TAILQ_HEAD(, spdk_iscsi_pdu) snack_pdu_list;
@@ -134,8 +156,10 @@ struct spdk_iscsi_conn {
 	bool conn_param_state_negotiated[MAX_CONNECTION_PARAMS];
 	struct iscsi_chap_auth auth;
 	bool authenticated;
+	bool disable_chap;
 	bool require_chap;
 	bool mutual_chap;
+	int32_t chap_group;
 	uint32_t pending_task_cnt;
 	uint32_t data_out_cnt;
 	uint32_t data_in_cnt;
@@ -171,7 +195,7 @@ extern struct spdk_iscsi_conn *g_conns_array;
 
 int spdk_initialize_iscsi_conns(void);
 void spdk_shutdown_iscsi_conns(void);
-void spdk_iscsi_conns_start_exit(struct spdk_iscsi_tgt_node *target);
+void spdk_iscsi_conns_request_logout(struct spdk_iscsi_tgt_node *target);
 int spdk_iscsi_get_active_conns(struct spdk_iscsi_tgt_node *target);
 
 int spdk_iscsi_conn_construct(struct spdk_iscsi_portal *portal, struct spdk_sock *sock);

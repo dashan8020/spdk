@@ -593,6 +593,10 @@ fio_extended_lba_setup_pi(struct spdk_fio_qpair *fio_qpair, struct io_u *io_u)
 		return rc;
 	}
 
+	if (io_u->ddir != DDIR_WRITE) {
+		return 0;
+	}
+
 	iov.iov_base = io_u->buf;
 	iov.iov_len = io_u->xfer_buflen;
 	rc = spdk_dif_generate(&iov, 1, lba_count, &fio_req->dif_ctx);
@@ -625,6 +629,10 @@ fio_separate_md_setup_pi(struct spdk_fio_qpair *fio_qpair, struct io_u *io_u)
 	if (rc != 0) {
 		fprintf(stderr, "Initialization of DIF context failed\n");
 		return rc;
+	}
+
+	if (io_u->ddir != DDIR_WRITE) {
+		return 0;
 	}
 
 	iov.iov_base = io_u->buf;
@@ -780,12 +788,20 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 	fio_req->fio_qpair = fio_qpair;
 
 	block_size = spdk_nvme_ns_get_extended_sector_size(ns);
+	if ((fio_qpair->io_flags & g_spdk_pract_flag) && (spdk_nvme_ns_get_md_size(ns) == 8)) {
+		/* If metadata size = 8 bytes, PI is stripped (read) or inserted (write), and
+		 *  so reduce metadata size from block size.  (If metadata size > 8 bytes, PI
+		 *  is passed (read) or replaced (write).  So block size is not necessary to
+		 *  change.)
+		 */
+		block_size = spdk_nvme_ns_get_sector_size(ns);
+	}
 
 	lba = io_u->offset / block_size;
 	lba_count = io_u->xfer_buflen / block_size;
 
 	/* TODO: considering situations that fio will randomize and verify io_u */
-	if (fio_qpair->do_nvme_pi && io_u->ddir == DDIR_WRITE) {
+	if (fio_qpair->do_nvme_pi) {
 		if (fio_qpair->extended_lba) {
 			rc = fio_extended_lba_setup_pi(fio_qpair, io_u);
 		} else {
@@ -802,10 +818,10 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 		if (!g_spdk_enable_sgl) {
 			rc = spdk_nvme_ns_cmd_read_with_md(ns, fio_qpair->qpair, io_u->buf, md_buf, lba, lba_count,
 							   spdk_fio_completion_cb, fio_req,
-							   dif_ctx->dif_flags, dif_ctx->apptag_mask, dif_ctx->app_tag);
+							   fio_qpair->io_flags, dif_ctx->apptag_mask, dif_ctx->app_tag);
 		} else {
 			rc = spdk_nvme_ns_cmd_readv_with_md(ns, fio_qpair->qpair, lba,
-							    lba_count, spdk_fio_completion_cb, fio_req, dif_ctx->dif_flags,
+							    lba_count, spdk_fio_completion_cb, fio_req, fio_qpair->io_flags,
 							    spdk_nvme_io_reset_sgl, spdk_nvme_io_next_sge, md_buf,
 							    dif_ctx->apptag_mask, dif_ctx->app_tag);
 		}
@@ -815,10 +831,10 @@ spdk_fio_queue(struct thread_data *td, struct io_u *io_u)
 			rc = spdk_nvme_ns_cmd_write_with_md(ns, fio_qpair->qpair, io_u->buf, md_buf, lba,
 							    lba_count,
 							    spdk_fio_completion_cb, fio_req,
-							    dif_ctx->dif_flags, dif_ctx->apptag_mask, dif_ctx->app_tag);
+							    fio_qpair->io_flags, dif_ctx->apptag_mask, dif_ctx->app_tag);
 		} else {
 			rc = spdk_nvme_ns_cmd_writev_with_md(ns, fio_qpair->qpair, lba,
-							     lba_count, spdk_fio_completion_cb, fio_req, dif_ctx->dif_flags,
+							     lba_count, spdk_fio_completion_cb, fio_req, fio_qpair->io_flags,
 							     spdk_nvme_io_reset_sgl, spdk_nvme_io_next_sge, md_buf,
 							     dif_ctx->apptag_mask, dif_ctx->app_tag);
 		}

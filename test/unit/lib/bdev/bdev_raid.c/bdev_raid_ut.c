@@ -37,12 +37,17 @@
 #include "spdk_internal/mock.h"
 #include "bdev/raid/bdev_raid.c"
 #include "bdev/raid/bdev_raid_rpc.c"
+#include "bdev/raid/raid0.c"
 
 #define MAX_BASE_DRIVES 32
 #define MAX_RAIDS 2
 #define INVALID_IO_SUBMIT 0xFFFF
 #define MAX_TEST_IO_RANGE (3 * 3 * 3 * (MAX_BASE_DRIVES + 5))
 #define BLOCK_CNT (1024ul * 1024ul * 1024ul * 1024ul)
+
+struct spdk_bdev_channel {
+	struct spdk_io_channel *channel;
+};
 
 /* Data structure to capture the output of IO for verification */
 struct io_output {
@@ -82,7 +87,7 @@ uint8_t g_rpc_err;
 char *g_get_raids_output[MAX_RAIDS];
 uint32_t g_get_raids_count;
 uint8_t g_json_decode_obj_err;
-uint8_t g_json_decode_obj_construct;
+uint8_t g_json_decode_obj_create;
 uint8_t g_config_level_create = 0;
 uint8_t g_test_multi_raids;
 struct raid_io_ranges g_io_ranges[MAX_TEST_IO_RANGE];
@@ -110,6 +115,7 @@ DEFINE_STUB(spdk_conf_next_section, struct spdk_conf_section *, (struct spdk_con
 	    NULL);
 DEFINE_STUB_V(spdk_rpc_register_method, (const char *method, spdk_rpc_method_handler func,
 		uint32_t state_mask));
+DEFINE_STUB_V(spdk_rpc_register_alias_deprecated, (const char *method, const char *alias));
 DEFINE_STUB_V(spdk_jsonrpc_end_result, (struct spdk_jsonrpc_request *request,
 					struct spdk_json_write_ctx *w));
 DEFINE_STUB(spdk_json_decode_string, int, (const struct spdk_json_val *val, void *out), 0);
@@ -118,8 +124,6 @@ DEFINE_STUB(spdk_json_decode_array, int, (const struct spdk_json_val *values,
 		spdk_json_decode_fn decode_func,
 		void *out, size_t max_size, size_t *out_size, size_t stride), 0);
 DEFINE_STUB(spdk_json_write_name, int, (struct spdk_json_write_ctx *w, const char *name), 0);
-DEFINE_STUB(spdk_json_write_named_string, int, (struct spdk_json_write_ctx *w,
-		const char *name, const char *val), 0);
 DEFINE_STUB(spdk_json_write_object_begin, int, (struct spdk_json_write_ctx *w), 0);
 DEFINE_STUB(spdk_json_write_named_object_begin, int, (struct spdk_json_write_ctx *w,
 		const char *name), 0);
@@ -131,6 +135,8 @@ DEFINE_STUB(spdk_json_write_named_array_begin, int, (struct spdk_json_write_ctx 
 DEFINE_STUB(spdk_json_write_bool, int, (struct spdk_json_write_ctx *w, bool val), 0);
 DEFINE_STUB(spdk_json_write_null, int, (struct spdk_json_write_ctx *w), 0);
 DEFINE_STUB(spdk_strerror, const char *, (int errnum), NULL);
+DEFINE_STUB(spdk_bdev_queue_io_wait, int, (struct spdk_bdev *bdev, struct spdk_io_channel *ch,
+		struct spdk_bdev_io_wait_entry *entry), 0);
 
 static void
 set_test_opts(void)
@@ -180,7 +186,7 @@ set_globals(void)
 	g_rpc_req = NULL;
 	g_rpc_req_size = 0;
 	g_json_decode_obj_err = 0;
-	g_json_decode_obj_construct = 0;
+	g_json_decode_obj_create = 0;
 	g_lba_offset = 0;
 }
 
@@ -236,7 +242,7 @@ void
 spdk_bdev_io_get_buf(struct spdk_bdev_io *bdev_io, spdk_bdev_io_get_buf_cb cb,
 		     uint64_t len)
 {
-	CU_ASSERT(false);
+	cb(bdev_io->internal.ch->channel, bdev_io, true);
 }
 
 /* Store the IO completion status in global variable to verify by various tests */
@@ -374,13 +380,11 @@ spdk_sprintf_alloc(const char *format, ...)
 
 int spdk_json_write_named_uint32(struct spdk_json_write_ctx *w, const char *name, uint32_t val)
 {
-	struct rpc_construct_raid_bdev *req = g_rpc_req;
+	struct rpc_bdev_raid_create *req = g_rpc_req;
 	if (strcmp(name, "strip_size_kb") == 0) {
 		CU_ASSERT(req->strip_size_kb == val);
 	} else if (strcmp(name, "blocklen_shift") == 0) {
 		CU_ASSERT(spdk_u32log2(g_block_len) == val);
-	} else if (strcmp(name, "raid_level") == 0) {
-		CU_ASSERT(req->raid_level == val);
 	} else if (strcmp(name, "num_base_bdevs") == 0) {
 		CU_ASSERT(req->base_bdevs.num_base_bdevs == val);
 	} else if (strcmp(name, "state") == 0) {
@@ -393,17 +397,20 @@ int spdk_json_write_named_uint32(struct spdk_json_write_ctx *w, const char *name
 	return 0;
 }
 
+int spdk_json_write_named_string(struct spdk_json_write_ctx *w, const char *name, const char *val)
+{
+	struct rpc_bdev_raid_create *req = g_rpc_req;
+	if (strcmp(name, "raid_level") == 0) {
+		CU_ASSERT(strcmp(val, raid_bdev_level_to_str(req->level)) == 0);
+	}
+	return 0;
+}
+
 void
 spdk_for_each_thread(spdk_msg_fn fn, void *ctx, spdk_msg_fn cpl)
 {
 	fn(ctx);
 	cpl(ctx);
-}
-
-void
-spdk_thread_send_msg(const struct spdk_thread *thread, spdk_msg_fn fn, void *ctx)
-{
-	fn(ctx);
 }
 
 void
@@ -472,11 +479,13 @@ spdk_conf_section_match_prefix(const struct spdk_conf_section *sp, const char *n
 char *
 spdk_conf_section_get_val(struct spdk_conf_section *sp, const char *key)
 {
-	struct rpc_construct_raid_bdev  *req = g_rpc_req;
+	struct rpc_bdev_raid_create  *req = g_rpc_req;
 
 	if (g_config_level_create) {
 		if (strcmp(key, "Name") == 0) {
 			return req->name;
+		} else if (strcmp(key, "RaidLevel") == 0) {
+			return (char *)raid_bdev_level_to_str(req->level);
 		}
 	}
 
@@ -486,15 +495,13 @@ spdk_conf_section_get_val(struct spdk_conf_section *sp, const char *key)
 int
 spdk_conf_section_get_intval(struct spdk_conf_section *sp, const char *key)
 {
-	struct rpc_construct_raid_bdev  *req = g_rpc_req;
+	struct rpc_bdev_raid_create  *req = g_rpc_req;
 
 	if (g_config_level_create) {
 		if (strcmp(key, "StripSize") == 0) {
 			return req->strip_size_kb;
 		} else if (strcmp(key, "NumDevices") == 0) {
 			return req->base_bdevs.num_base_bdevs;
-		} else if (strcmp(key, "RaidLevel") == 0) {
-			return req->raid_level;
 		}
 	}
 
@@ -504,7 +511,7 @@ spdk_conf_section_get_intval(struct spdk_conf_section *sp, const char *key)
 char *
 spdk_conf_section_get_nmval(struct spdk_conf_section *sp, const char *key, int idx1, int idx2)
 {
-	struct rpc_construct_raid_bdev  *req = g_rpc_req;
+	struct rpc_bdev_raid_create  *req = g_rpc_req;
 
 	if (g_config_level_create) {
 		if (strcmp(key, "Devices") == 0) {
@@ -534,19 +541,19 @@ spdk_json_decode_object(const struct spdk_json_val *values,
 			const struct spdk_json_object_decoder *decoders, size_t num_decoders,
 			void *out)
 {
-	struct rpc_construct_raid_bdev *req, *_out;
+	struct rpc_bdev_raid_create *req, *_out;
 	size_t i;
 
 	if (g_json_decode_obj_err) {
 		return -1;
-	} else if (g_json_decode_obj_construct) {
+	} else if (g_json_decode_obj_create) {
 		req = g_rpc_req;
 		_out = out;
 
 		_out->name = strdup(req->name);
 		SPDK_CU_ASSERT_FATAL(_out->name != NULL);
 		_out->strip_size_kb = req->strip_size_kb;
-		_out->raid_level = req->raid_level;
+		_out->level = req->level;
 		_out->base_bdevs.num_base_bdevs = req->base_bdevs.num_base_bdevs;
 		for (i = 0; i < req->base_bdevs.num_base_bdevs; i++) {
 			_out->base_bdevs.base_bdevs[i] = strdup(req->base_bdevs.base_bdevs[i]);
@@ -620,9 +627,11 @@ bdev_io_cleanup(struct spdk_bdev_io *bdev_io)
 }
 
 static void
-bdev_io_initialize(struct spdk_bdev_io *bdev_io, struct spdk_bdev *bdev,
+bdev_io_initialize(struct spdk_bdev_io *bdev_io, struct spdk_io_channel *ch, struct spdk_bdev *bdev,
 		   uint64_t lba, uint64_t blocks, int16_t iotype)
 {
+	struct spdk_bdev_channel *channel = spdk_io_channel_get_ctx(ch);
+
 	bdev_io->bdev = bdev;
 	bdev_io->u.bdev.offset_blocks = lba;
 	bdev_io->u.bdev.num_blocks = blocks;
@@ -638,6 +647,7 @@ bdev_io_initialize(struct spdk_bdev_io *bdev_io, struct spdk_bdev *bdev,
 	bdev_io->u.bdev.iovs->iov_base = calloc(1, bdev_io->u.bdev.num_blocks * g_block_len);
 	SPDK_CU_ASSERT_FATAL(bdev_io->u.bdev.iovs->iov_base != NULL);
 	bdev_io->u.bdev.iovs->iov_len = bdev_io->u.bdev.num_blocks * g_block_len;
+	bdev_io->internal.ch = channel;
 }
 
 static void
@@ -876,7 +886,7 @@ verify_raid_bdev_present(const char *name, bool presence)
 	}
 }
 static void
-verify_raid_config(struct rpc_construct_raid_bdev *r, bool presence)
+verify_raid_config(struct rpc_bdev_raid_create *r, bool presence)
 {
 	struct raid_bdev_config *raid_cfg = NULL;
 	uint8_t i;
@@ -890,7 +900,7 @@ verify_raid_config(struct rpc_construct_raid_bdev *r, bool presence)
 			CU_ASSERT(raid_cfg->raid_bdev != NULL);
 			CU_ASSERT(raid_cfg->strip_size == r->strip_size_kb);
 			CU_ASSERT(raid_cfg->num_base_bdevs == r->base_bdevs.num_base_bdevs);
-			CU_ASSERT(raid_cfg->raid_level == r->raid_level);
+			CU_ASSERT(raid_cfg->level == r->level);
 			if (raid_cfg->base_bdev != NULL) {
 				for (i = 0; i < raid_cfg->num_base_bdevs; i++) {
 					val = strcmp(raid_cfg->base_bdev[i].name,
@@ -910,7 +920,7 @@ verify_raid_config(struct rpc_construct_raid_bdev *r, bool presence)
 }
 
 static void
-verify_raid_bdev(struct rpc_construct_raid_bdev *r, bool presence, uint32_t raid_state)
+verify_raid_bdev(struct rpc_bdev_raid_create *r, bool presence, uint32_t raid_state)
 {
 	struct raid_bdev *pbdev;
 	uint8_t i;
@@ -934,7 +944,7 @@ verify_raid_bdev(struct rpc_construct_raid_bdev *r, bool presence, uint32_t raid
 			CU_ASSERT(pbdev->state == raid_state);
 			CU_ASSERT(pbdev->num_base_bdevs == r->base_bdevs.num_base_bdevs);
 			CU_ASSERT(pbdev->num_base_bdevs_discovered == r->base_bdevs.num_base_bdevs);
-			CU_ASSERT(pbdev->raid_level == r->raid_level);
+			CU_ASSERT(pbdev->level == r->level);
 			CU_ASSERT(pbdev->destruct_called == false);
 			for (i = 0; i < pbdev->num_base_bdevs; i++) {
 				if (pbdev->base_bdev_info && pbdev->base_bdev_info[i].bdev) {
@@ -1003,45 +1013,8 @@ verify_raid_bdev(struct rpc_construct_raid_bdev *r, bool presence, uint32_t raid
 	}
 }
 
-int
-spdk_bdev_queue_io_wait(struct spdk_bdev *bdev, struct spdk_io_channel *ch,
-			struct spdk_bdev_io_wait_entry *entry)
-{
-	CU_ASSERT(bdev == entry->bdev);
-	CU_ASSERT(entry->cb_fn != NULL);
-	CU_ASSERT(entry->cb_arg != NULL);
-	TAILQ_INSERT_TAIL(&g_io_waitq, entry, link);
-	return 0;
-}
-
-
-static uint32_t
-get_num_elts_in_waitq(void)
-{
-	struct spdk_bdev_io_wait_entry *ele;
-	uint32_t count = 0;
-
-	TAILQ_FOREACH(ele, &g_io_waitq, link) {
-		count++;
-	}
-
-	return count;
-}
-
 static void
-process_io_waitq(void)
-{
-	struct spdk_bdev_io_wait_entry *ele;
-	struct spdk_bdev_io_wait_entry *next_ele;
-
-	TAILQ_FOREACH_SAFE(ele, &g_io_waitq, link, next_ele) {
-		TAILQ_REMOVE(&g_io_waitq, ele, link);
-		ele->cb_fn(ele->cb_arg);
-	}
-}
-
-static void
-verify_get_raids(struct rpc_construct_raid_bdev *construct_req,
+verify_get_raids(struct rpc_bdev_raid_create *construct_req,
 		 uint8_t g_max_raids,
 		 char **g_get_raids_output, uint32_t g_get_raids_count)
 {
@@ -1084,7 +1057,7 @@ create_base_bdevs(uint32_t bbdev_start_idx)
 }
 
 static void
-create_test_req(struct rpc_construct_raid_bdev *r, const char *raid_name,
+create_test_req(struct rpc_bdev_raid_create *r, const char *raid_name,
 		uint8_t bbdev_start_idx, bool create_base_bdev)
 {
 	uint8_t i;
@@ -1094,7 +1067,7 @@ create_test_req(struct rpc_construct_raid_bdev *r, const char *raid_name,
 	r->name = strdup(raid_name);
 	SPDK_CU_ASSERT_FATAL(r->name != NULL);
 	r->strip_size_kb = (g_strip_size * g_block_len) / 1024;
-	r->raid_level = 0;
+	r->level = RAID0;
 	r->base_bdevs.num_base_bdevs = g_max_base_drives;
 	for (i = 0; i < g_max_base_drives; i++, bbdev_idx++) {
 		snprintf(name, 16, "%s%u%s", "Nvme", bbdev_idx, "n1");
@@ -1109,22 +1082,22 @@ create_test_req(struct rpc_construct_raid_bdev *r, const char *raid_name,
 }
 
 static void
-create_construct_req(struct rpc_construct_raid_bdev *r, const char *raid_name,
-		     uint8_t bbdev_start_idx, bool create_base_bdev,
-		     uint8_t json_decode_obj_err)
+create_raid_bdev_create_req(struct rpc_bdev_raid_create *r, const char *raid_name,
+			    uint8_t bbdev_start_idx, bool create_base_bdev,
+			    uint8_t json_decode_obj_err)
 {
 	create_test_req(r, raid_name, bbdev_start_idx, create_base_bdev);
 
 	g_rpc_err = 0;
-	g_json_decode_obj_construct = 1;
+	g_json_decode_obj_create = 1;
 	g_json_decode_obj_err = json_decode_obj_err;
 	g_config_level_create = 0;
 	g_test_multi_raids = 0;
 }
 
 static void
-create_construct_config(struct rpc_construct_raid_bdev *r, const char *raid_name,
-			uint8_t bbdev_start_idx, bool create_base_bdev)
+create_raid_bdev_create_config(struct rpc_bdev_raid_create *r, const char *raid_name,
+			       uint8_t bbdev_start_idx, bool create_base_bdev)
 {
 	create_test_req(r, raid_name, bbdev_start_idx, create_base_bdev);
 
@@ -1133,7 +1106,7 @@ create_construct_config(struct rpc_construct_raid_bdev *r, const char *raid_name
 }
 
 static void
-free_test_req(struct rpc_construct_raid_bdev *r)
+free_test_req(struct rpc_bdev_raid_create *r)
 {
 	uint8_t i;
 
@@ -1144,8 +1117,8 @@ free_test_req(struct rpc_construct_raid_bdev *r)
 }
 
 static void
-create_destroy_req(struct rpc_destroy_raid_bdev *r, const char *raid_name,
-		   uint8_t json_decode_obj_err)
+create_raid_bdev_delete_req(struct rpc_bdev_raid_delete *r, const char *raid_name,
+			    uint8_t json_decode_obj_err)
 {
 	r->name = strdup(raid_name);
 	SPDK_CU_ASSERT_FATAL(r->name != NULL);
@@ -1153,14 +1126,14 @@ create_destroy_req(struct rpc_destroy_raid_bdev *r, const char *raid_name,
 	g_rpc_req = r;
 	g_rpc_req_size = sizeof(*r);
 	g_rpc_err = 0;
-	g_json_decode_obj_construct = 0;
+	g_json_decode_obj_create = 0;
 	g_json_decode_obj_err = json_decode_obj_err;
 	g_config_level_create = 0;
 	g_test_multi_raids = 0;
 }
 
 static void
-create_get_raids_req(struct rpc_get_raid_bdevs *r, const char *category,
+create_get_raids_req(struct rpc_bdev_raid_get_bdevs *r, const char *category,
 		     uint8_t json_decode_obj_err)
 {
 	r->category = strdup(category);
@@ -1169,7 +1142,7 @@ create_get_raids_req(struct rpc_get_raid_bdevs *r, const char *category,
 	g_rpc_req = r;
 	g_rpc_req_size = sizeof(*r);
 	g_rpc_err = 0;
-	g_json_decode_obj_construct = 0;
+	g_json_decode_obj_create = 0;
 	g_json_decode_obj_err = json_decode_obj_err;
 	g_config_level_create = 0;
 	g_test_multi_raids = 1;
@@ -1177,25 +1150,25 @@ create_get_raids_req(struct rpc_get_raid_bdevs *r, const char *category,
 }
 
 static void
-test_construct_raid(void)
+test_create_raid(void)
 {
-	struct rpc_construct_raid_bdev req;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_create req;
+	struct rpc_bdev_raid_delete delete_req;
 
 	set_globals();
 	CU_ASSERT(raid_bdev_init() == 0);
 
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
-	create_construct_req(&req, "raid1", 0, true, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&req, "raid1", 0, true, 0);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config(&req, true);
 	verify_raid_bdev(&req, true, RAID_BDEV_STATE_ONLINE);
 	free_test_req(&req);
 
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	create_raid_bdev_delete_req(&delete_req, "raid1", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	raid_bdev_exit();
 	base_bdevs_cleanup();
@@ -1203,25 +1176,25 @@ test_construct_raid(void)
 }
 
 static void
-test_destroy_raid(void)
+test_delete_raid(void)
 {
-	struct rpc_construct_raid_bdev construct_req;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_create construct_req;
+	struct rpc_bdev_raid_delete delete_req;
 
 	set_globals();
 	CU_ASSERT(raid_bdev_init() == 0);
 
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
-	create_construct_req(&construct_req, "raid1", 0, true, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&construct_req, "raid1", 0, true, 0);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config(&construct_req, true);
 	verify_raid_bdev(&construct_req, true, RAID_BDEV_STATE_ONLINE);
 	free_test_req(&construct_req);
 
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	create_raid_bdev_delete_req(&delete_req, "raid1", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
@@ -1232,10 +1205,10 @@ test_destroy_raid(void)
 }
 
 static void
-test_construct_raid_invalid_args(void)
+test_create_raid_invalid_args(void)
 {
-	struct rpc_construct_raid_bdev req;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_create req;
+	struct rpc_bdev_raid_delete destroy_req;
 	struct raid_bdev_config *raid_cfg;
 
 	set_globals();
@@ -1243,63 +1216,63 @@ test_construct_raid_invalid_args(void)
 
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
-	create_construct_req(&req, "raid1", 0, true, 0);
-	req.raid_level = 1;
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&req, "raid1", 0, true, 0);
+	req.level = INVALID_RAID_LEVEL;
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 1);
 	free_test_req(&req);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
 
-	create_construct_req(&req, "raid1", 0, false, 1);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&req, "raid1", 0, false, 1);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 1);
 	free_test_req(&req);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
 
-	create_construct_req(&req, "raid1", 0, false, 0);
+	create_raid_bdev_create_req(&req, "raid1", 0, false, 0);
 	req.strip_size_kb = 1231;
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 1);
 	free_test_req(&req);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
 
-	create_construct_req(&req, "raid1", 0, false, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&req, "raid1", 0, false, 0);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config(&req, true);
 	verify_raid_bdev(&req, true, RAID_BDEV_STATE_ONLINE);
 	free_test_req(&req);
 
-	create_construct_req(&req, "raid1", 0, false, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&req, "raid1", 0, false, 0);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 1);
 	free_test_req(&req);
 
-	create_construct_req(&req, "raid2", 0, false, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&req, "raid2", 0, false, 0);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 1);
 	free_test_req(&req);
 	verify_raid_config_present("raid2", false);
 	verify_raid_bdev_present("raid2", false);
 
-	create_construct_req(&req, "raid2", g_max_base_drives, true, 0);
+	create_raid_bdev_create_req(&req, "raid2", g_max_base_drives, true, 0);
 	free(req.base_bdevs.base_bdevs[g_max_base_drives - 1]);
 	req.base_bdevs.base_bdevs[g_max_base_drives - 1] = strdup("Nvme0n1");
 	SPDK_CU_ASSERT_FATAL(req.base_bdevs.base_bdevs[g_max_base_drives - 1] != NULL);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 1);
 	free_test_req(&req);
 	verify_raid_config_present("raid2", false);
 	verify_raid_bdev_present("raid2", false);
 
-	create_construct_req(&req, "raid2", g_max_base_drives, true, 0);
+	create_raid_bdev_create_req(&req, "raid2", g_max_base_drives, true, 0);
 	free(req.base_bdevs.base_bdevs[g_max_base_drives - 1]);
 	req.base_bdevs.base_bdevs[g_max_base_drives - 1] = strdup("Nvme100000n1");
 	SPDK_CU_ASSERT_FATAL(req.base_bdevs.base_bdevs[g_max_base_drives - 1] != NULL);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	free_test_req(&req);
 	verify_raid_config_present("raid2", true);
@@ -1309,8 +1282,8 @@ test_construct_raid_invalid_args(void)
 	check_and_remove_raid_bdev(raid_cfg);
 	raid_bdev_config_cleanup(raid_cfg);
 
-	create_construct_req(&req, "raid2", g_max_base_drives, false, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&req, "raid2", g_max_base_drives, false, 0);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	free_test_req(&req);
 	verify_raid_config_present("raid2", true);
@@ -1318,46 +1291,46 @@ test_construct_raid_invalid_args(void)
 	verify_raid_config_present("raid1", true);
 	verify_raid_bdev_present("raid1", true);
 
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
-	create_destroy_req(&destroy_req, "raid2", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	create_raid_bdev_delete_req(&destroy_req, "raid1", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
+	create_raid_bdev_delete_req(&destroy_req, "raid2", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	raid_bdev_exit();
 	base_bdevs_cleanup();
 	reset_globals();
 }
 
 static void
-test_destroy_raid_invalid_args(void)
+test_delete_raid_invalid_args(void)
 {
-	struct rpc_construct_raid_bdev construct_req;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_create construct_req;
+	struct rpc_bdev_raid_delete destroy_req;
 
 	set_globals();
 	CU_ASSERT(raid_bdev_init() == 0);
 
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
-	create_construct_req(&construct_req, "raid1", 0, true, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&construct_req, "raid1", 0, true, 0);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config(&construct_req, true);
 	verify_raid_bdev(&construct_req, true, RAID_BDEV_STATE_ONLINE);
 	free_test_req(&construct_req);
 
-	create_destroy_req(&destroy_req, "raid2", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	create_raid_bdev_delete_req(&destroy_req, "raid2", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 1);
 
-	create_destroy_req(&destroy_req, "raid1", 1);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	create_raid_bdev_delete_req(&destroy_req, "raid1", 1);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 1);
 	free(destroy_req.name);
 	verify_raid_config_present("raid1", true);
 	verify_raid_bdev_present("raid1", true);
 
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	create_raid_bdev_delete_req(&destroy_req, "raid1", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
@@ -1370,8 +1343,8 @@ test_destroy_raid_invalid_args(void)
 static void
 test_io_channel(void)
 {
-	struct rpc_construct_raid_bdev req;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_create req;
+	struct rpc_bdev_raid_delete destroy_req;
 	struct raid_bdev *pbdev;
 	struct raid_bdev_io_channel *ch_ctx;
 	uint8_t i;
@@ -1379,10 +1352,10 @@ test_io_channel(void)
 	set_globals();
 	CU_ASSERT(raid_bdev_init() == 0);
 
-	create_construct_req(&req, "raid1", 0, true, 0);
+	create_raid_bdev_create_req(&req, "raid1", 0, true, 0);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config(&req, true);
 	verify_raid_bdev(&req, true, RAID_BDEV_STATE_ONLINE);
@@ -1404,8 +1377,8 @@ test_io_channel(void)
 	CU_ASSERT(ch_ctx->base_channel == NULL);
 	free_test_req(&req);
 
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	create_raid_bdev_delete_req(&destroy_req, "raid1", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
@@ -1419,8 +1392,8 @@ test_io_channel(void)
 static void
 test_write_io(void)
 {
-	struct rpc_construct_raid_bdev req;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_create req;
+	struct rpc_bdev_raid_delete destroy_req;
 	struct raid_bdev *pbdev;
 	struct spdk_io_channel *ch;
 	struct raid_bdev_io_channel *ch_ctx;
@@ -1428,14 +1401,16 @@ test_write_io(void)
 	struct spdk_bdev_io *bdev_io;
 	uint64_t io_len;
 	uint64_t lba = 0;
+	struct spdk_io_channel *ch_b;
+	struct spdk_bdev_channel *ch_b_ctx;
 
 	set_globals();
 	CU_ASSERT(raid_bdev_init() == 0);
 
-	create_construct_req(&req, "raid1", 0, true, 0);
+	create_raid_bdev_create_req(&req, "raid1", 0, true, 0);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config(&req, true);
 	verify_raid_bdev(&req, true, RAID_BDEV_STATE_ONLINE);
@@ -1447,6 +1422,12 @@ test_write_io(void)
 	CU_ASSERT(pbdev != NULL);
 	ch = calloc(1, sizeof(struct spdk_io_channel) + sizeof(struct raid_bdev_io_channel));
 	SPDK_CU_ASSERT_FATAL(ch != NULL);
+
+	ch_b = calloc(1, sizeof(struct spdk_io_channel) + sizeof(struct spdk_bdev_channel));
+	SPDK_CU_ASSERT_FATAL(ch_b != NULL);
+	ch_b_ctx = spdk_io_channel_get_ctx(ch_b);
+	ch_b_ctx->channel = ch;
+
 	ch_ctx = spdk_io_channel_get_ctx(ch);
 	SPDK_CU_ASSERT_FATAL(ch_ctx != NULL);
 
@@ -1460,7 +1441,7 @@ test_write_io(void)
 		bdev_io = calloc(1, sizeof(struct spdk_bdev_io) + sizeof(struct raid_bdev_io));
 		SPDK_CU_ASSERT_FATAL(bdev_io != NULL);
 		io_len = (g_strip_size / 2) << i;
-		bdev_io_initialize(bdev_io, &pbdev->bdev, lba, io_len, SPDK_BDEV_IO_TYPE_WRITE);
+		bdev_io_initialize(bdev_io, ch_b, &pbdev->bdev, lba, io_len, SPDK_BDEV_IO_TYPE_WRITE);
 		lba += g_strip_size;
 		memset(g_io_output, 0, ((g_max_io_size / g_strip_size) + 1) * sizeof(struct io_output));
 		g_io_output_index = 0;
@@ -1474,8 +1455,9 @@ test_write_io(void)
 	raid_bdev_destroy_cb(pbdev, ch_ctx);
 	CU_ASSERT(ch_ctx->base_channel == NULL);
 	free(ch);
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	free(ch_b);
+	create_raid_bdev_delete_req(&destroy_req, "raid1", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
@@ -1488,8 +1470,8 @@ test_write_io(void)
 static void
 test_read_io(void)
 {
-	struct rpc_construct_raid_bdev req;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_create req;
+	struct rpc_bdev_raid_delete destroy_req;
 	struct raid_bdev *pbdev;
 	struct spdk_io_channel *ch;
 	struct raid_bdev_io_channel *ch_ctx;
@@ -1497,14 +1479,16 @@ test_read_io(void)
 	struct spdk_bdev_io *bdev_io;
 	uint64_t io_len;
 	uint64_t lba;
+	struct spdk_io_channel *ch_b;
+	struct spdk_bdev_channel *ch_b_ctx;
 
 	set_globals();
 	CU_ASSERT(raid_bdev_init() == 0);
 
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
-	create_construct_req(&req, "raid1", 0, true, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&req, "raid1", 0, true, 0);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config(&req, true);
 	verify_raid_bdev(&req, true, RAID_BDEV_STATE_ONLINE);
@@ -1516,6 +1500,12 @@ test_read_io(void)
 	CU_ASSERT(pbdev != NULL);
 	ch = calloc(1, sizeof(struct spdk_io_channel) + sizeof(struct raid_bdev_io_channel));
 	SPDK_CU_ASSERT_FATAL(ch != NULL);
+
+	ch_b = calloc(1, sizeof(struct spdk_io_channel) + sizeof(struct spdk_bdev_channel));
+	SPDK_CU_ASSERT_FATAL(ch_b != NULL);
+	ch_b_ctx = spdk_io_channel_get_ctx(ch_b);
+	ch_b_ctx->channel = ch;
+
 	ch_ctx = spdk_io_channel_get_ctx(ch);
 	SPDK_CU_ASSERT_FATAL(ch_ctx != NULL);
 
@@ -1531,7 +1521,7 @@ test_read_io(void)
 		bdev_io = calloc(1, sizeof(struct spdk_bdev_io) + sizeof(struct raid_bdev_io));
 		SPDK_CU_ASSERT_FATAL(bdev_io != NULL);
 		io_len = (g_strip_size / 2) << i;
-		bdev_io_initialize(bdev_io, &pbdev->bdev, lba, io_len, SPDK_BDEV_IO_TYPE_READ);
+		bdev_io_initialize(bdev_io, ch_b, &pbdev->bdev, lba, io_len, SPDK_BDEV_IO_TYPE_READ);
 		lba += g_strip_size;
 		memset(g_io_output, 0, ((g_max_io_size / g_strip_size) + 1) * sizeof(struct io_output));
 		g_io_output_index = 0;
@@ -1544,8 +1534,9 @@ test_read_io(void)
 	raid_bdev_destroy_cb(pbdev, ch_ctx);
 	CU_ASSERT(ch_ctx->base_channel == NULL);
 	free(ch);
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	free(ch_b);
+	create_raid_bdev_delete_req(&destroy_req, "raid1", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
@@ -1633,8 +1624,8 @@ raid_bdev_io_generate(void)
 static void
 test_unmap_io(void)
 {
-	struct rpc_construct_raid_bdev req;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_create req;
+	struct rpc_bdev_raid_delete destroy_req;
 	struct raid_bdev *pbdev;
 	struct spdk_io_channel *ch;
 	struct raid_bdev_io_channel *ch_ctx;
@@ -1649,8 +1640,8 @@ test_unmap_io(void)
 
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
-	create_construct_req(&req, "raid1", 0, true, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&req, "raid1", 0, true, 0);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config(&req, true);
 	verify_raid_bdev(&req, true, RAID_BDEV_STATE_ONLINE);
@@ -1679,7 +1670,7 @@ test_unmap_io(void)
 		SPDK_CU_ASSERT_FATAL(bdev_io != NULL);
 		io_len = g_io_ranges[count].nblocks;
 		lba = g_io_ranges[count].lba;
-		bdev_io_initialize(bdev_io, &pbdev->bdev, lba, io_len, SPDK_BDEV_IO_TYPE_UNMAP);
+		bdev_io_initialize(bdev_io, ch, &pbdev->bdev, lba, io_len, SPDK_BDEV_IO_TYPE_UNMAP);
 		memset(g_io_output, 0, g_max_base_drives * sizeof(struct io_output));
 		g_io_output_index = 0;
 		raid_bdev_submit_request(ch, bdev_io);
@@ -1692,8 +1683,8 @@ test_unmap_io(void)
 	raid_bdev_destroy_cb(pbdev, ch_ctx);
 	CU_ASSERT(ch_ctx->base_channel == NULL);
 	free(ch);
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	create_raid_bdev_delete_req(&destroy_req, "raid1", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
@@ -1707,8 +1698,8 @@ test_unmap_io(void)
 static void
 test_io_failure(void)
 {
-	struct rpc_construct_raid_bdev req;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_create req;
+	struct rpc_bdev_raid_delete destroy_req;
 	struct raid_bdev *pbdev;
 	struct spdk_io_channel *ch;
 	struct raid_bdev_io_channel *ch_ctx;
@@ -1723,8 +1714,8 @@ test_io_failure(void)
 
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
-	create_construct_req(&req, "raid1", 0, true, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&req, "raid1", 0, true, 0);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config(&req, true);
 	verify_raid_bdev(&req, true, RAID_BDEV_STATE_ONLINE);
@@ -1750,7 +1741,7 @@ test_io_failure(void)
 		bdev_io = calloc(1, sizeof(struct spdk_bdev_io) + sizeof(struct raid_bdev_io));
 		SPDK_CU_ASSERT_FATAL(bdev_io != NULL);
 		io_len = (g_strip_size / 2) << count;
-		bdev_io_initialize(bdev_io, &pbdev->bdev, lba, io_len, SPDK_BDEV_IO_TYPE_INVALID);
+		bdev_io_initialize(bdev_io, ch, &pbdev->bdev, lba, io_len, SPDK_BDEV_IO_TYPE_INVALID);
 		lba += g_strip_size;
 		memset(g_io_output, 0, ((g_max_io_size / g_strip_size) + 1) * sizeof(struct io_output));
 		g_io_output_index = 0;
@@ -1767,7 +1758,7 @@ test_io_failure(void)
 		bdev_io = calloc(1, sizeof(struct spdk_bdev_io) + sizeof(struct raid_bdev_io));
 		SPDK_CU_ASSERT_FATAL(bdev_io != NULL);
 		io_len = (g_strip_size / 2) << count;
-		bdev_io_initialize(bdev_io, &pbdev->bdev, lba, io_len, SPDK_BDEV_IO_TYPE_WRITE);
+		bdev_io_initialize(bdev_io, ch, &pbdev->bdev, lba, io_len, SPDK_BDEV_IO_TYPE_WRITE);
 		lba += g_strip_size;
 		memset(g_io_output, 0, ((g_max_io_size / g_strip_size) + 1) * sizeof(struct io_output));
 		g_io_output_index = 0;
@@ -1780,8 +1771,8 @@ test_io_failure(void)
 	raid_bdev_destroy_cb(pbdev, ch_ctx);
 	CU_ASSERT(ch_ctx->base_channel == NULL);
 	free(ch);
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	create_raid_bdev_delete_req(&destroy_req, "raid1", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
@@ -1795,8 +1786,8 @@ test_io_failure(void)
 static void
 test_reset_io(void)
 {
-	struct rpc_construct_raid_bdev req;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_create req;
+	struct rpc_bdev_raid_delete destroy_req;
 	struct raid_bdev *pbdev;
 	struct spdk_io_channel *ch;
 	struct raid_bdev_io_channel *ch_ctx;
@@ -1808,8 +1799,8 @@ test_reset_io(void)
 
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
-	create_construct_req(&req, "raid1", 0, true, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&req, "raid1", 0, true, 0);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config(&req, true);
 	verify_raid_bdev(&req, true, RAID_BDEV_STATE_ONLINE);
@@ -1837,7 +1828,7 @@ test_reset_io(void)
 
 	bdev_io = calloc(1, sizeof(struct spdk_bdev_io) + sizeof(struct raid_bdev_io));
 	SPDK_CU_ASSERT_FATAL(bdev_io != NULL);
-	bdev_io_initialize(bdev_io, &pbdev->bdev, 0, 1, SPDK_BDEV_IO_TYPE_RESET);
+	bdev_io_initialize(bdev_io, ch, &pbdev->bdev, 0, 1, SPDK_BDEV_IO_TYPE_RESET);
 	memset(g_io_output, 0, g_max_base_drives * sizeof(struct io_output));
 	g_io_output_index = 0;
 	raid_bdev_submit_request(ch, bdev_io);
@@ -1848,91 +1839,8 @@ test_reset_io(void)
 	raid_bdev_destroy_cb(pbdev, ch_ctx);
 	CU_ASSERT(ch_ctx->base_channel == NULL);
 	free(ch);
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
-	CU_ASSERT(g_rpc_err == 0);
-	verify_raid_config_present("raid1", false);
-	verify_raid_bdev_present("raid1", false);
-
-	raid_bdev_exit();
-	base_bdevs_cleanup();
-	reset_globals();
-}
-
-/* Test waitq logic */
-static void
-test_io_waitq(void)
-{
-	struct rpc_construct_raid_bdev req;
-	struct rpc_destroy_raid_bdev destroy_req;
-	struct raid_bdev *pbdev;
-	struct spdk_io_channel *ch;
-	struct raid_bdev_io_channel *ch_ctx;
-	uint8_t i;
-	struct spdk_bdev_io *bdev_io;
-	struct spdk_bdev_io *bdev_io_next;
-	uint32_t count;
-	uint64_t lba;
-	TAILQ_HEAD(, spdk_bdev_io) head_io;
-
-	set_globals();
-	CU_ASSERT(raid_bdev_init() == 0);
-
-	verify_raid_config_present("raid1", false);
-	verify_raid_bdev_present("raid1", false);
-	create_construct_req(&req, "raid1", 0, true, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
-	CU_ASSERT(g_rpc_err == 0);
-	verify_raid_config(&req, true);
-	verify_raid_bdev(&req, true, RAID_BDEV_STATE_ONLINE);
-	TAILQ_FOREACH(pbdev, &g_raid_bdev_list, global_link) {
-		if (strcmp(pbdev->bdev.name, "raid1") == 0) {
-			break;
-		}
-	}
-	SPDK_CU_ASSERT_FATAL(pbdev != NULL);
-	ch = calloc(1, sizeof(struct spdk_io_channel) + sizeof(struct raid_bdev_io_channel));
-	SPDK_CU_ASSERT_FATAL(ch != NULL);
-	ch_ctx = spdk_io_channel_get_ctx(ch);
-	SPDK_CU_ASSERT_FATAL(ch_ctx != NULL);
-
-	CU_ASSERT(raid_bdev_create_cb(pbdev, ch_ctx) == 0);
-	SPDK_CU_ASSERT_FATAL(ch_ctx->base_channel != NULL);
-	for (i = 0; i < req.base_bdevs.num_base_bdevs; i++) {
-		CU_ASSERT(ch_ctx->base_channel[i] == (void *)0x1);
-	}
-	free_test_req(&req);
-
-	lba = 0;
-	TAILQ_INIT(&head_io);
-	for (count = 0; count < 128; count++) {
-		bdev_io = calloc(1, sizeof(struct spdk_bdev_io) + sizeof(struct raid_bdev_io));
-		SPDK_CU_ASSERT_FATAL(bdev_io != NULL);
-		TAILQ_INSERT_TAIL(&head_io, bdev_io, module_link);
-		bdev_io_initialize(bdev_io, &pbdev->bdev, lba, 8, SPDK_BDEV_IO_TYPE_WRITE);
-		g_bdev_io_submit_status = -ENOMEM;
-		lba += g_strip_size;
-		raid_bdev_submit_request(ch, bdev_io);
-	}
-
-	g_ignore_io_output = 1;
-
-	count = get_num_elts_in_waitq();
-	CU_ASSERT(count == 128);
-	g_bdev_io_submit_status = 0;
-	process_io_waitq();
-	CU_ASSERT(TAILQ_EMPTY(&g_io_waitq));
-
-	TAILQ_FOREACH_SAFE(bdev_io, &head_io, module_link, bdev_io_next) {
-		bdev_io_cleanup(bdev_io);
-	}
-
-	raid_bdev_destroy_cb(pbdev, ch_ctx);
-	CU_ASSERT(ch_ctx->base_channel == NULL);
-	g_ignore_io_output = 0;
-	free(ch);
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	create_raid_bdev_delete_req(&destroy_req, "raid1", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
@@ -1946,31 +1854,31 @@ test_io_waitq(void)
 static void
 test_multi_raid_no_io(void)
 {
-	struct rpc_construct_raid_bdev *construct_req;
-	struct rpc_destroy_raid_bdev destroy_req;
-	struct rpc_get_raid_bdevs get_raids_req;
+	struct rpc_bdev_raid_create *construct_req;
+	struct rpc_bdev_raid_delete destroy_req;
+	struct rpc_bdev_raid_get_bdevs get_raids_req;
 	uint8_t i;
 	char name[16];
 	uint8_t bbdev_idx = 0;
 
 	set_globals();
-	construct_req = calloc(MAX_RAIDS, sizeof(struct rpc_construct_raid_bdev));
+	construct_req = calloc(MAX_RAIDS, sizeof(struct rpc_bdev_raid_create));
 	SPDK_CU_ASSERT_FATAL(construct_req != NULL);
 	CU_ASSERT(raid_bdev_init() == 0);
 	for (i = 0; i < g_max_raids; i++) {
 		snprintf(name, 16, "%s%u", "raid", i);
 		verify_raid_config_present(name, false);
 		verify_raid_bdev_present(name, false);
-		create_construct_req(&construct_req[i], name, bbdev_idx, true, 0);
+		create_raid_bdev_create_req(&construct_req[i], name, bbdev_idx, true, 0);
 		bbdev_idx += g_max_base_drives;
-		spdk_rpc_construct_raid_bdev(NULL, NULL);
+		spdk_rpc_bdev_raid_create(NULL, NULL);
 		CU_ASSERT(g_rpc_err == 0);
 		verify_raid_config(&construct_req[i], true);
 		verify_raid_bdev(&construct_req[i], true, RAID_BDEV_STATE_ONLINE);
 	}
 
 	create_get_raids_req(&get_raids_req, "all", 0);
-	spdk_rpc_get_raid_bdevs(NULL, NULL);
+	spdk_rpc_bdev_raid_get_bdevs(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_get_raids(construct_req, g_max_raids, g_get_raids_output, g_get_raids_count);
 	for (i = 0; i < g_get_raids_count; i++) {
@@ -1978,7 +1886,7 @@ test_multi_raid_no_io(void)
 	}
 
 	create_get_raids_req(&get_raids_req, "online", 0);
-	spdk_rpc_get_raid_bdevs(NULL, NULL);
+	spdk_rpc_bdev_raid_get_bdevs(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_get_raids(construct_req, g_max_raids, g_get_raids_output, g_get_raids_count);
 	for (i = 0; i < g_get_raids_count; i++) {
@@ -1986,28 +1894,28 @@ test_multi_raid_no_io(void)
 	}
 
 	create_get_raids_req(&get_raids_req, "configuring", 0);
-	spdk_rpc_get_raid_bdevs(NULL, NULL);
+	spdk_rpc_bdev_raid_get_bdevs(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	CU_ASSERT(g_get_raids_count == 0);
 
 	create_get_raids_req(&get_raids_req, "offline", 0);
-	spdk_rpc_get_raid_bdevs(NULL, NULL);
+	spdk_rpc_bdev_raid_get_bdevs(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	CU_ASSERT(g_get_raids_count == 0);
 
 	create_get_raids_req(&get_raids_req, "invalid_category", 0);
-	spdk_rpc_get_raid_bdevs(NULL, NULL);
+	spdk_rpc_bdev_raid_get_bdevs(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 1);
 	CU_ASSERT(g_get_raids_count == 0);
 
 	create_get_raids_req(&get_raids_req, "all", 1);
-	spdk_rpc_get_raid_bdevs(NULL, NULL);
+	spdk_rpc_bdev_raid_get_bdevs(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 1);
 	free(get_raids_req.category);
 	CU_ASSERT(g_get_raids_count == 0);
 
 	create_get_raids_req(&get_raids_req, "all", 0);
-	spdk_rpc_get_raid_bdevs(NULL, NULL);
+	spdk_rpc_bdev_raid_get_bdevs(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	CU_ASSERT(g_get_raids_count == g_max_raids);
 	for (i = 0; i < g_get_raids_count; i++) {
@@ -2017,8 +1925,8 @@ test_multi_raid_no_io(void)
 	for (i = 0; i < g_max_raids; i++) {
 		SPDK_CU_ASSERT_FATAL(construct_req[i].name != NULL);
 		snprintf(name, 16, "%s", construct_req[i].name);
-		create_destroy_req(&destroy_req, name, 0);
-		spdk_rpc_destroy_raid_bdev(NULL, NULL);
+		create_raid_bdev_delete_req(&destroy_req, name, 0);
+		spdk_rpc_bdev_raid_delete(NULL, NULL);
 		CU_ASSERT(g_rpc_err == 0);
 		verify_raid_config_present(name, false);
 		verify_raid_bdev_present(name, false);
@@ -2036,8 +1944,8 @@ test_multi_raid_no_io(void)
 static void
 test_multi_raid_with_io(void)
 {
-	struct rpc_construct_raid_bdev *construct_req;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_create *construct_req;
+	struct rpc_bdev_raid_delete destroy_req;
 	uint8_t i, j;
 	char name[16];
 	uint8_t bbdev_idx = 0;
@@ -2048,20 +1956,28 @@ test_multi_raid_with_io(void)
 	uint64_t io_len;
 	uint64_t lba = 0;
 	int16_t iotype;
+	struct spdk_io_channel *ch_b;
+	struct spdk_bdev_channel *ch_b_ctx;
 
 	set_globals();
-	construct_req = calloc(g_max_raids, sizeof(struct rpc_construct_raid_bdev));
+	construct_req = calloc(g_max_raids, sizeof(struct rpc_bdev_raid_create));
 	SPDK_CU_ASSERT_FATAL(construct_req != NULL);
 	CU_ASSERT(raid_bdev_init() == 0);
 	ch = calloc(g_max_raids, sizeof(struct spdk_io_channel) + sizeof(struct raid_bdev_io_channel));
 	SPDK_CU_ASSERT_FATAL(ch != NULL);
+
+	ch_b = calloc(1, sizeof(struct spdk_io_channel) + sizeof(struct spdk_bdev_channel));
+	SPDK_CU_ASSERT_FATAL(ch_b != NULL);
+	ch_b_ctx = spdk_io_channel_get_ctx(ch_b);
+	ch_b_ctx->channel = ch;
+
 	for (i = 0; i < g_max_raids; i++) {
 		snprintf(name, 16, "%s%u", "raid", i);
 		verify_raid_config_present(name, false);
 		verify_raid_bdev_present(name, false);
-		create_construct_req(&construct_req[i], name, bbdev_idx, true, 0);
+		create_raid_bdev_create_req(&construct_req[i], name, bbdev_idx, true, 0);
 		bbdev_idx += g_max_base_drives;
-		spdk_rpc_construct_raid_bdev(NULL, NULL);
+		spdk_rpc_bdev_raid_create(NULL, NULL);
 		CU_ASSERT(g_rpc_err == 0);
 		verify_raid_config(&construct_req[i], true);
 		verify_raid_bdev(&construct_req[i], true, RAID_BDEV_STATE_ONLINE);
@@ -2096,7 +2012,7 @@ test_multi_raid_with_io(void)
 				break;
 			}
 		}
-		bdev_io_initialize(bdev_io, &pbdev->bdev, lba, io_len, iotype);
+		bdev_io_initialize(bdev_io, ch_b, &pbdev->bdev, lba, io_len, iotype);
 		CU_ASSERT(pbdev != NULL);
 		raid_bdev_submit_request(ch, bdev_io);
 		verify_io(bdev_io, g_max_base_drives, ch_ctx, pbdev,
@@ -2116,8 +2032,8 @@ test_multi_raid_with_io(void)
 		raid_bdev_destroy_cb(pbdev, ch_ctx);
 		CU_ASSERT(ch_ctx->base_channel == NULL);
 		snprintf(name, 16, "%s", construct_req[i].name);
-		create_destroy_req(&destroy_req, name, 0);
-		spdk_rpc_destroy_raid_bdev(NULL, NULL);
+		create_raid_bdev_delete_req(&destroy_req, name, 0);
+		spdk_rpc_bdev_raid_delete(NULL, NULL);
 		CU_ASSERT(g_rpc_err == 0);
 		verify_raid_config_present(name, false);
 		verify_raid_bdev_present(name, false);
@@ -2128,6 +2044,7 @@ test_multi_raid_with_io(void)
 	}
 	free(construct_req);
 	free(ch);
+	free(ch_b);
 	base_bdevs_cleanup();
 	reset_globals();
 }
@@ -2143,15 +2060,15 @@ test_io_type_supported(void)
 static void
 test_create_raid_from_config(void)
 {
-	struct rpc_construct_raid_bdev req;
+	struct rpc_bdev_raid_create req;
 	struct spdk_bdev *bdev;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_delete destroy_req;
 	bool can_claim;
 	struct raid_bdev_config *raid_cfg;
 	uint8_t base_bdev_slot;
 
 	set_globals();
-	create_construct_config(&req, "raid1", 0, true);
+	create_raid_bdev_create_config(&req, "raid1", 0, true);
 	CU_ASSERT(raid_bdev_init() == 0);
 
 	verify_raid_config_present("raid1", true);
@@ -2167,8 +2084,8 @@ test_create_raid_from_config(void)
 	verify_raid_config(&req, true);
 	verify_raid_bdev(&req, true, RAID_BDEV_STATE_ONLINE);
 
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	create_raid_bdev_delete_req(&destroy_req, "raid1", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
@@ -2182,11 +2099,11 @@ test_create_raid_from_config(void)
 static void
 test_create_raid_from_config_invalid_params(void)
 {
-	struct rpc_construct_raid_bdev req;
+	struct rpc_bdev_raid_create req;
 
 	set_globals();
 
-	create_construct_config(&req, "raid1", 0, true);
+	create_raid_bdev_create_config(&req, "raid1", 0, true);
 	free(req.name);
 	req.name = NULL;
 	CU_ASSERT(raid_bdev_init() != 0);
@@ -2194,28 +2111,28 @@ test_create_raid_from_config_invalid_params(void)
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
 
-	create_construct_config(&req, "raid1", 0, false);
+	create_raid_bdev_create_config(&req, "raid1", 0, false);
 	req.strip_size_kb = 1234;
 	CU_ASSERT(raid_bdev_init() != 0);
 	free_test_req(&req);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
 
-	create_construct_config(&req, "raid1", 0, false);
-	req.raid_level = 1;
+	create_raid_bdev_create_config(&req, "raid1", 0, false);
+	req.level = INVALID_RAID_LEVEL;
 	CU_ASSERT(raid_bdev_init() != 0);
 	free_test_req(&req);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
 
-	create_construct_config(&req, "raid1", 0, false);
-	req.raid_level = 1;
+	create_raid_bdev_create_config(&req, "raid1", 0, false);
+	req.level = INVALID_RAID_LEVEL;
 	CU_ASSERT(raid_bdev_init() != 0);
 	free_test_req(&req);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
 
-	create_construct_config(&req, "raid1", 0, false);
+	create_raid_bdev_create_config(&req, "raid1", 0, false);
 	req.base_bdevs.num_base_bdevs++;
 	CU_ASSERT(raid_bdev_init() != 0);
 	req.base_bdevs.num_base_bdevs--;
@@ -2223,7 +2140,7 @@ test_create_raid_from_config_invalid_params(void)
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
 
-	create_construct_config(&req, "raid1", 0, false);
+	create_raid_bdev_create_config(&req, "raid1", 0, false);
 	req.base_bdevs.num_base_bdevs--;
 	CU_ASSERT(raid_bdev_init() != 0);
 	req.base_bdevs.num_base_bdevs++;
@@ -2232,7 +2149,7 @@ test_create_raid_from_config_invalid_params(void)
 	verify_raid_bdev_present("raid1", false);
 
 	if (g_max_base_drives > 1) {
-		create_construct_config(&req, "raid1", 0, false);
+		create_raid_bdev_create_config(&req, "raid1", 0, false);
 		snprintf(req.base_bdevs.base_bdevs[g_max_base_drives - 1], 15, "%s", "Nvme0n1");
 		CU_ASSERT(raid_bdev_init() != 0);
 		free_test_req(&req);
@@ -2248,8 +2165,8 @@ test_create_raid_from_config_invalid_params(void)
 static void
 test_raid_json_dump_info(void)
 {
-	struct rpc_construct_raid_bdev req;
-	struct rpc_destroy_raid_bdev destroy_req;
+	struct rpc_bdev_raid_create req;
+	struct rpc_bdev_raid_delete destroy_req;
 	struct raid_bdev *pbdev;
 
 	set_globals();
@@ -2257,8 +2174,8 @@ test_raid_json_dump_info(void)
 
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
-	create_construct_req(&req, "raid1", 0, true, 0);
-	spdk_rpc_construct_raid_bdev(NULL, NULL);
+	create_raid_bdev_create_req(&req, "raid1", 0, true, 0);
+	spdk_rpc_bdev_raid_create(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_bdev(&req, true, RAID_BDEV_STATE_ONLINE);
 
@@ -2273,8 +2190,8 @@ test_raid_json_dump_info(void)
 
 	free_test_req(&req);
 
-	create_destroy_req(&destroy_req, "raid1", 0);
-	spdk_rpc_destroy_raid_bdev(NULL, NULL);
+	create_raid_bdev_delete_req(&destroy_req, "raid1", 0);
+	spdk_rpc_bdev_raid_delete(NULL, NULL);
 	CU_ASSERT(g_rpc_err == 0);
 	verify_raid_config_present("raid1", false);
 	verify_raid_bdev_present("raid1", false);
@@ -2288,6 +2205,24 @@ static void
 test_context_size(void)
 {
 	CU_ASSERT(raid_bdev_get_ctx_size() == sizeof(struct raid_bdev_io));
+}
+
+static void
+test_raid_level_conversions(void)
+{
+	const char *raid_str;
+
+	CU_ASSERT(raid_bdev_parse_raid_level("abcd123") == INVALID_RAID_LEVEL);
+	CU_ASSERT(raid_bdev_parse_raid_level("0") == RAID0);
+	CU_ASSERT(raid_bdev_parse_raid_level("raid0") == RAID0);
+	CU_ASSERT(raid_bdev_parse_raid_level("RAID0") == RAID0);
+
+	raid_str = raid_bdev_level_to_str(INVALID_RAID_LEVEL);
+	CU_ASSERT(raid_str != NULL && strlen(raid_str) == 0);
+	raid_str = raid_bdev_level_to_str(1234);
+	CU_ASSERT(raid_str != NULL && strlen(raid_str) == 0);
+	raid_str = raid_bdev_level_to_str(RAID0);
+	CU_ASSERT(raid_str != NULL && strcmp(raid_str, "raid0") == 0);
 }
 
 int main(int argc, char **argv)
@@ -2306,19 +2241,18 @@ int main(int argc, char **argv)
 	}
 
 	if (
-		CU_add_test(suite, "test_construct_raid", test_construct_raid) == NULL ||
-		CU_add_test(suite, "test_destroy_raid", test_destroy_raid) == NULL ||
-		CU_add_test(suite, "test_construct_raid_invalid_args",
-			    test_construct_raid_invalid_args) == NULL ||
-		CU_add_test(suite, "test_destroy_raid_invalid_args",
-			    test_destroy_raid_invalid_args) == NULL ||
+		CU_add_test(suite, "test_create_raid", test_create_raid) == NULL ||
+		CU_add_test(suite, "test_delete_raid", test_delete_raid) == NULL ||
+		CU_add_test(suite, "test_create_raid_invalid_args",
+			    test_create_raid_invalid_args) == NULL ||
+		CU_add_test(suite, "test_delete_raid_invalid_args",
+			    test_delete_raid_invalid_args) == NULL ||
 		CU_add_test(suite, "test_io_channel", test_io_channel) == NULL ||
 		CU_add_test(suite, "test_reset_io", test_reset_io) == NULL    ||
 		CU_add_test(suite, "test_write_io", test_write_io) == NULL    ||
 		CU_add_test(suite, "test_read_io", test_read_io) == NULL     ||
 		CU_add_test(suite, "test_unmap_io", test_unmap_io) == NULL     ||
 		CU_add_test(suite, "test_io_failure", test_io_failure) == NULL ||
-		CU_add_test(suite, "test_io_waitq", test_io_waitq) == NULL ||
 		CU_add_test(suite, "test_multi_raid_no_io", test_multi_raid_no_io) == NULL ||
 		CU_add_test(suite, "test_multi_raid_with_io", test_multi_raid_with_io) == NULL ||
 		CU_add_test(suite, "test_io_type_supported", test_io_type_supported) == NULL ||
@@ -2326,7 +2260,8 @@ int main(int argc, char **argv)
 		CU_add_test(suite, "test_create_raid_from_config_invalid_params",
 			    test_create_raid_from_config_invalid_params) == NULL ||
 		CU_add_test(suite, "test_raid_json_dump_info", test_raid_json_dump_info) == NULL ||
-		CU_add_test(suite, "test_context_size", test_context_size) == NULL
+		CU_add_test(suite, "test_context_size", test_context_size) == NULL ||
+		CU_add_test(suite, "test_raid_level_conversions", test_raid_level_conversions) == NULL
 	) {
 		CU_cleanup_registry();
 		return CU_get_error();

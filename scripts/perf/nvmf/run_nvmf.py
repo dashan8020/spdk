@@ -176,10 +176,12 @@ class Target(Server):
 
 
 class Initiator(Server):
-    def __init__(self, name, username, password, mode, nic_ips, ip, transport="rdma", nvmecli_dir=None, workspace="/tmp/spdk"):
+    def __init__(self, name, username, password, mode, nic_ips, ip, transport="rdma", nvmecli_dir=None, workspace="/tmp/spdk",
+                 fio_dir="/usr/src/fio"):
         super(Initiator, self).__init__(name, username, password, mode, nic_ips, transport)
         self.ip = ip
         self.spdk_dir = workspace
+        self.fio_dir = fio_dir
 
         if nvmecli_dir:
             self.nvmecli_bin = os.path.join(nvmecli_dir, "nvme")
@@ -307,16 +309,18 @@ runtime={run_time}
     def run_fio(self, fio_config_file, run_num=None):
         job_name, _ = os.path.splitext(fio_config_file)
         self.log_print("Starting FIO run for job: %s" % job_name)
+        fio_bin = os.path.join(self.fio_dir, "fio")
+        self.log_print("Using FIO: %s" % fio_bin)
         if run_num:
             for i in range(1, run_num + 1):
                 output_filename = job_name + "_run_" + str(i) + "_" + self.name + ".json"
-                cmd = "sudo /usr/src/fio/fio %s --output-format=json --output=%s" % (fio_config_file, output_filename)
+                cmd = "sudo %s %s --output-format=json --output=%s" % (fio_bin, fio_config_file, output_filename)
                 output, error = self.remote_call(cmd)
                 self.log_print(output)
                 self.log_print(error)
         else:
             output_filename = job_name + "_" + self.name + ".json"
-            cmd = "sudo /usr/src/fio/fio %s --output-format=json --output=%s" % (fio_config_file, output_filename)
+            cmd = "sudo %s %s --output-format=json --output=%s" % (fio_bin, fio_config_file, output_filename)
             output, error = self.remote_call(cmd)
             self.log_print(output)
             self.log_print(error)
@@ -466,7 +470,7 @@ class SPDKTarget(Target):
         # Create RDMA transport layer
         rpc.nvmf.nvmf_create_transport(self.client, trtype=self.transport, num_shared_buffers=self.num_shared_buffers)
         self.log_print("SPDK NVMeOF transport layer:")
-        rpc.client.print_dict(rpc.nvmf.get_nvmf_transports(self.client))
+        rpc.client.print_dict(rpc.nvmf.nvmf_get_transports(self.client))
 
         if self.null_block:
             nvme_section = self.spdk_tgt_add_nullblock()
@@ -480,7 +484,7 @@ class SPDKTarget(Target):
         self.log_print("Adding null block bdev to config via RPC")
         rpc.bdev.bdev_null_create(self.client, 102400, 4096, "Nvme0n1")
         self.log_print("SPDK Bdevs configuration:")
-        rpc.client.print_dict(rpc.bdev.get_bdevs(self.client))
+        rpc.client.print_dict(rpc.bdev.bdev_get_bdevs(self.client))
 
     def spdk_tgt_add_nvme_conf(self, req_num_disks=None):
         self.log_print("Adding NVMe bdevs to config via RPC")
@@ -496,10 +500,10 @@ class SPDKTarget(Target):
                 bdfs = bdfs[0:req_num_disks]
 
         for i, bdf in enumerate(bdfs):
-            rpc.bdev.construct_nvme_bdev(self.client, name="Nvme%s" % i, trtype="PCIe", traddr=bdf)
+            rpc.bdev.bdev_nvme_attach_controller(self.client, name="Nvme%s" % i, trtype="PCIe", traddr=bdf)
 
         self.log_print("SPDK Bdevs configuration:")
-        rpc.client.print_dict(rpc.bdev.get_bdevs(self.client))
+        rpc.client.print_dict(rpc.bdev.bdev_get_bdevs(self.client))
 
     def spdk_tgt_add_subsystem_conf(self, ips=None, req_num_disks=None):
         self.log_print("Adding subsystems to config")
@@ -517,7 +521,7 @@ class SPDKTarget(Target):
                 nqn = "nqn.2018-09.io.spdk:cnode%s" % c
                 serial = "SPDK00%s" % c
                 bdev_name = "Nvme%sn1" % (c - 1)
-                rpc.nvmf.nvmf_subsystem_create(self.client, nqn, serial,
+                rpc.nvmf.nvmf_create_subsystem(self.client, nqn, serial,
                                                allow_any_host=True, max_namespaces=8)
                 rpc.nvmf.nvmf_subsystem_add_ns(self.client, nqn, bdev_name)
 
@@ -528,7 +532,7 @@ class SPDKTarget(Target):
                                                      adrfam="ipv4")
 
         self.log_print("SPDK NVMeOF subsystem configuration:")
-        rpc.client.print_dict(rpc.nvmf.get_nvmf_subsystems(self.client))
+        rpc.client.print_dict(rpc.nvmf.nvmf_get_subsystems(self.client))
 
     def tgt_start(self):
         self.subsys_no = get_nvme_devices_count()
@@ -564,7 +568,7 @@ class SPDKTarget(Target):
 
 class KernelInitiator(Initiator):
     def __init__(self, name, username, password, mode, nic_ips, ip, transport, **kwargs):
-        super(KernelInitiator, self).__init__(name, username, password, mode, nic_ips, ip, transport)
+        super(KernelInitiator, self).__init__(name, username, password, mode, nic_ips, ip, transport, fio_dir)
 
     def __del__(self):
         self.ssh_connection.close()
@@ -598,7 +602,7 @@ class KernelInitiator(Initiator):
 
 class SPDKInitiator(Initiator):
     def __init__(self, name, username, password, mode, nic_ips, ip, num_cores=None, transport="rdma", **kwargs):
-        super(SPDKInitiator, self).__init__(name, username, password, mode, nic_ips, ip, transport)
+        super(SPDKInitiator, self).__init__(name, username, password, mode, nic_ips, ip, transport, fio_dir)
         if num_cores:
             self.num_cores = num_cores
 
@@ -608,8 +612,9 @@ class SPDKInitiator(Initiator):
         self.remote_call("unzip -qo /tmp/spdk_drop.zip -d %s" % self.spdk_dir)
 
         self.log_print("Sources unpacked")
-        self.remote_call("cd %s; git submodule update --init; ./configure --with-rdma --with-fio=/usr/src/fio;"
-                         "make clean; make -j$(($(nproc)*2))" % self.spdk_dir)
+        self.log_print("Using fio directory %s" % self.fio_dir)
+        self.remote_call("cd %s; git submodule update --init; ./configure --with-rdma --with-fio=%s;"
+                         "make clean; make -j$(($(nproc)*2))" % (self.spdk_dir, self.fio_dir))
 
         self.log_print("SPDK built")
         self.remote_call("sudo %s/scripts/setup.sh" % self.spdk_dir)

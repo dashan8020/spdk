@@ -55,18 +55,24 @@ struct vbdev_ocf_qcxt {
 	/* Base devices channels */
 	struct spdk_io_channel      *cache_ch;
 	struct spdk_io_channel      *core_ch;
+	/* If true, we have to free this context on queue stop */
+	bool allocated;
 	/* Link to per-bdev list of queue contexts */
 	TAILQ_ENTRY(vbdev_ocf_qcxt)  tailq;
 };
 
 /* Important states */
 struct vbdev_ocf_state {
+	/* From the moment when clean delete started */
+	bool                         doing_clean_delete;
 	/* From the moment when finish started */
 	bool                         doing_finish;
 	/* From the moment when reset IO recieved, until it is completed */
 	bool                         doing_reset;
 	/* From the moment when exp_bdev is registered */
 	bool                         started;
+	/* From the moment when register path started */
+	bool                         starting;
 	/* Status of last attempt for stopping this device */
 	int                          stop_status;
 };
@@ -101,8 +107,6 @@ struct vbdev_ocf_mngt_ctx {
 	 * It gets incremented on each step until it dereferences to NULL */
 	vbdev_ocf_mngt_fn                  *current_step;
 
-	/* Poller, registered once per whole management operation */
-	struct spdk_poller                 *poller;
 	/* Function that gets invoked by poller on each iteration */
 	vbdev_ocf_mngt_fn                   poller_fn;
 	/* Poller timeout time stamp - when the poller should stop with error */
@@ -195,6 +199,8 @@ struct vbdev_ocf_base *vbdev_ocf_get_base_by_name(const char *name);
 
 /* Stop OCF cache and unregister SPDK bdev */
 int vbdev_ocf_delete(struct vbdev_ocf *vbdev, void (*cb)(void *, int), void *cb_arg);
+
+int vbdev_ocf_delete_clean(struct vbdev_ocf *vbdev, void (*cb)(void *, int), void *cb_arg);
 
 typedef void (*vbdev_ocf_foreach_fn)(struct vbdev_ocf *, void *);
 

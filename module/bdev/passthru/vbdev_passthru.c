@@ -173,7 +173,7 @@ _pt_complete_io(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 	}
 
 	/* Complete the original IO and then free the one that we created here
-	 * as a result of issuing an IO via submit_reqeust.
+	 * as a result of issuing an IO via submit_request.
 	 */
 	spdk_bdev_io_complete(orig_io, status);
 	spdk_bdev_free_io(bdev_io);
@@ -252,7 +252,7 @@ pt_read_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, boo
 
 /* Called when someone above submits IO to this pt vbdev. We're simply passing it on here
  * via SPDK IO calls which in turn allocate another bdev IO and call our cpl callback provided
- * below along with the original bdiv_io so that we can complete it once this IO completes.
+ * below along with the original bdev_io so that we can complete it once this IO completes.
  */
 static void
 vbdev_passthru_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
@@ -362,7 +362,7 @@ vbdev_passthru_get_io_channel(void *ctx)
 	return pt_ch;
 }
 
-/* This is the output for get_bdevs() for this vbdev */
+/* This is the output for bdev_get_bdevs() for this vbdev */
 static int
 vbdev_passthru_dump_info_json(void *ctx, struct spdk_json_write_ctx *w)
 {
@@ -385,7 +385,7 @@ vbdev_passthru_config_json(struct spdk_json_write_ctx *w)
 
 	TAILQ_FOREACH(pt_node, &g_pt_nodes, link) {
 		spdk_json_write_object_begin(w);
-		spdk_json_write_named_string(w, "method", "construct_passthru_bdev");
+		spdk_json_write_named_string(w, "method", "bdev_passthru_create");
 		spdk_json_write_named_object_begin(w, "params");
 		spdk_json_write_named_string(w, "base_bdev_name", spdk_bdev_get_name(pt_node->base_bdev));
 		spdk_json_write_named_string(w, "name", spdk_bdev_get_name(&pt_node->pt_bdev));
@@ -414,7 +414,7 @@ pt_bdev_ch_create_cb(void *io_device, void *ctx_buf)
 
 /* We provide this callback for the SPDK channel code to destroy a channel
  * created with our create callback. We just need to undo anything we did
- * when we created. If this bdev used its own poller, we'd unregsiter it here.
+ * when we created. If this bdev used its own poller, we'd unregister it here.
  */
 static void
 pt_bdev_ch_destroy_cb(void *io_device, void *ctx_buf)
@@ -687,7 +687,7 @@ vbdev_passthru_register(struct spdk_bdev *bdev)
 
 /* Create the passthru disk from the given bdev and vbdev name. */
 int
-create_passthru_disk(const char *bdev_name, const char *vbdev_name)
+bdev_passthru_create_disk(const char *bdev_name, const char *vbdev_name)
 {
 	struct spdk_bdev *bdev = NULL;
 	int rc = 0;
@@ -713,7 +713,7 @@ create_passthru_disk(const char *bdev_name, const char *vbdev_name)
 }
 
 void
-delete_passthru_disk(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn, void *cb_arg)
+bdev_passthru_delete_disk(struct spdk_bdev *bdev, spdk_bdev_unregister_cb cb_fn, void *cb_arg)
 {
 	struct bdev_names *name;
 

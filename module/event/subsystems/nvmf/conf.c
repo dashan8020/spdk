@@ -241,13 +241,61 @@ spdk_nvmf_tgt_listen_done(void *cb_arg, int status)
 }
 
 static int
+spdk_nvmf_tgt_parse_listen_ip_addr(char *address,
+				   struct spdk_nvme_transport_id *trid)
+{
+	char *host;
+	char *port;
+
+	if (spdk_parse_ip_addr(address, &host, &port) < 0) {
+		SPDK_ERRLOG("Unable to parse listen address '%s'\n", address);
+		return -1;
+	}
+
+	if (strchr(host, ':')) {
+		trid->adrfam = SPDK_NVMF_ADRFAM_IPV6;
+	} else {
+		trid->adrfam = SPDK_NVMF_ADRFAM_IPV4;
+	}
+
+	snprintf(trid->traddr, sizeof(trid->traddr), "%s", host);
+	if (port) {
+		snprintf(trid->trsvcid, sizeof(trid->trsvcid), "%s", port);
+	}
+
+	return 0;
+}
+
+static int
+spdk_nvmf_tgt_parse_listen_fc_addr(const char *address,
+				   struct spdk_nvme_transport_id *trid)
+{
+	/* transport address format and requirements,
+	 * "nn-0xWWNN:pn-0xWWPN" - size equals 43 bytes and is required to
+	 * contain 'nn' and 'pn'.
+	 */
+	if (strlen(address) != 43 || strncmp(address, "nn-0x", 5) ||
+	    strncmp(&address[21], ":pn-0x", 6)) {
+		SPDK_ERRLOG("Unable to parse fc address '%s'\n", address);
+		return -1;
+	}
+
+	trid->adrfam = SPDK_NVMF_ADRFAM_FC;
+	snprintf(trid->trsvcid, sizeof(trid->trsvcid), "none");
+	snprintf(trid->traddr, sizeof(trid->traddr), "%s", address);
+
+	return 0;
+}
+
+static int
 spdk_nvmf_parse_subsystem(struct spdk_conf_section *sp)
 {
 	const char *nqn, *mode;
 	size_t i;
-	int ret;
+	int ret = -1;
 	int lcore;
 	bool allow_any_host;
+	bool allow_any_listener = true;
 	const char *sn;
 	const char *mn;
 	struct spdk_nvmf_subsystem *subsystem;
@@ -391,8 +439,6 @@ spdk_nvmf_parse_subsystem(struct spdk_conf_section *sp)
 		const char *transport;
 		const char *address;
 		char *address_dup;
-		char *host;
-		char *port;
 
 		transport = spdk_conf_section_get_nmval(sp, "Listen", i, 0);
 		if (!transport) {
@@ -414,29 +460,26 @@ spdk_nvmf_parse_subsystem(struct spdk_conf_section *sp)
 			break;
 		}
 
-		ret = spdk_parse_ip_addr(address_dup, &host, &port);
-		if (ret < 0) {
-			SPDK_ERRLOG("Unable to parse listen address '%s'\n", address);
-			free(address_dup);
+		if (trid.trtype == SPDK_NVME_TRANSPORT_RDMA ||
+		    trid.trtype == SPDK_NVME_TRANSPORT_TCP) {
+			ret = spdk_nvmf_tgt_parse_listen_ip_addr(address_dup, &trid);
+		} else if (trid.trtype == SPDK_NVME_TRANSPORT_FC) {
+			ret = spdk_nvmf_tgt_parse_listen_fc_addr(address_dup, &trid);
+		}
+
+		free(address_dup);
+
+		if (ret) {
 			continue;
 		}
-
-		if (strchr(host, ':')) {
-			trid.adrfam = SPDK_NVMF_ADRFAM_IPV6;
-		} else {
-			trid.adrfam = SPDK_NVMF_ADRFAM_IPV4;
-		}
-
-		snprintf(trid.traddr, sizeof(trid.traddr), "%s", host);
-		if (port) {
-			snprintf(trid.trsvcid, sizeof(trid.trsvcid), "%s", port);
-		}
-		free(address_dup);
 
 		spdk_nvmf_tgt_listen(g_spdk_nvmf_tgt, &trid, spdk_nvmf_tgt_listen_done, NULL);
 
 		spdk_nvmf_subsystem_add_listener(subsystem, &trid);
+		allow_any_listener = false;
 	}
+
+	spdk_nvmf_subsystem_allow_any_listener(subsystem, allow_any_listener);
 
 	/* Parse Host sections */
 	for (i = 0; ; i++) {
@@ -597,6 +640,9 @@ spdk_nvmf_parse_transport(struct spdk_nvmf_parse_transport_ctx *ctx)
 		bval = spdk_conf_section_get_boolval(ctx->sp, "C2HSuccess", true);
 		opts.c2h_success = bval;
 	}
+
+	bval = spdk_conf_section_get_boolval(ctx->sp, "DifInsertOrStrip", false);
+	opts.dif_insert_or_strip = bval;
 
 	transport = spdk_nvmf_transport_create(trtype, &opts);
 	if (transport) {

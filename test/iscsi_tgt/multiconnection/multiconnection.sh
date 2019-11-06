@@ -19,17 +19,17 @@ function remove_backends() {
 	echo "INFO: Removing lvol bdevs"
 	for i in $(seq 1 $CONNECTION_NUMBER); do
 		lun="lvs0/lbd_$i"
-		$rpc_py destroy_lvol_bdev $lun
+		$rpc_py bdev_lvol_delete $lun
 		echo -e "\tINFO: lvol bdev $lun removed"
 	done
 	sleep 1
 
 	echo "INFO: Removing lvol stores"
-	$rpc_py destroy_lvol_store -l lvs0
+	$rpc_py bdev_lvol_delete_lvstore -l lvs0
 	echo "INFO: lvol store lvs0 removed"
 
 	echo "INFO: Removing NVMe"
-	$rpc_py delete_nvme_controller Nvme0
+	$rpc_py bdev_nvme_detach_controller Nvme0
 
 	return 0
 }
@@ -43,27 +43,27 @@ echo "iSCSI target launched. pid: $iscsipid"
 trap 'remove_backends; iscsicleanup; killprocess $iscsipid; iscsitestfini $1 $2; exit 1' SIGINT SIGTERM EXIT
 
 waitforlisten $iscsipid
-$rpc_py set_iscsi_options -o 30 -a 128
-$rpc_py start_subsystem_init
+$rpc_py iscsi_set_options -o 30 -a 128
+$rpc_py framework_start_init
 $rootdir/scripts/gen_nvme.sh --json | $rpc_py load_subsystem_config
 timing_exit start_iscsi_tgt
 
-$rpc_py add_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT
-$rpc_py add_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
+$rpc_py iscsi_create_portal_group $PORTAL_TAG $TARGET_IP:$ISCSI_PORT
+$rpc_py iscsi_create_initiator_group $INITIATOR_TAG $INITIATOR_NAME $NETMASK
 
 echo "Creating an iSCSI target node."
-ls_guid=$($rpc_py construct_lvol_store "Nvme0n1" "lvs0" -c 1048576)
+ls_guid=$($rpc_py bdev_lvol_create_lvstore "Nvme0n1" "lvs0" -c 1048576)
 
 # Assign even size for each lvol_bdev.
 get_lvs_free_mb $ls_guid
 lvol_bdev_size=$(($free_mb / $CONNECTION_NUMBER))
 for i in $(seq 1 $CONNECTION_NUMBER); do
-	$rpc_py construct_lvol_bdev -u $ls_guid lbd_$i $lvol_bdev_size
+	$rpc_py bdev_lvol_create -u $ls_guid lbd_$i $lvol_bdev_size
 done
 
 for i in $(seq 1 $CONNECTION_NUMBER); do
 	lun="lvs0/lbd_$i:0"
-	$rpc_py construct_target_node Target$i Target${i}_alias "$lun" $PORTAL_TAG:$INITIATOR_TAG 256 -d
+	$rpc_py iscsi_create_target_node Target$i Target${i}_alias "$lun" $PORTAL_TAG:$INITIATOR_TAG 256 -d
 done
 sleep 1
 

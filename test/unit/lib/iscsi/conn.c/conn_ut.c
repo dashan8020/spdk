@@ -49,12 +49,6 @@ static TAILQ_HEAD(, spdk_iscsi_task) g_ut_read_tasks = TAILQ_HEAD_INITIALIZER(g_
 
 DEFINE_STUB(spdk_app_get_shm_id, int, (void), 0);
 
-DEFINE_STUB(spdk_event_allocate, struct spdk_event *,
-	    (uint32_t lcore, spdk_event_fn fn, void *arg1, void *arg2),
-	    NULL);
-
-DEFINE_STUB_V(spdk_event_call, (struct spdk_event *event));
-
 DEFINE_STUB(spdk_sock_getaddr, int,
 	    (struct spdk_sock *sock, char *saddr, int slen, uint16_t *sport,
 	     char *caddr, int clen, uint16_t *cport),
@@ -96,7 +90,8 @@ DEFINE_STUB(spdk_scsi_dev_get_lun, struct spdk_scsi_lun *,
 	    (struct spdk_scsi_dev *dev, int lun_id), NULL);
 
 DEFINE_STUB(spdk_scsi_dev_has_pending_tasks, bool,
-	    (const struct spdk_scsi_dev *dev), true);
+	    (const struct spdk_scsi_dev *dev, const struct spdk_scsi_port *initiator_port),
+	    true);
 
 DEFINE_STUB(spdk_scsi_lun_open, int,
 	    (struct spdk_scsi_lun *lun, spdk_scsi_lun_remove_cb_t hotremove_cb,
@@ -148,17 +143,13 @@ DEFINE_STUB_V(spdk_iscsi_task_mgmt_response,
 
 DEFINE_STUB_V(spdk_iscsi_send_nopin, (struct spdk_iscsi_conn *conn));
 
-DEFINE_STUB(spdk_iscsi_execute, int,
-	    (struct spdk_iscsi_conn *conn, struct spdk_iscsi_pdu *pdu), 0);
-
 DEFINE_STUB_V(spdk_del_transfer_task,
 	      (struct spdk_iscsi_conn *conn, uint32_t task_tag));
 
 DEFINE_STUB(spdk_iscsi_conn_handle_queued_datain_tasks, int,
 	    (struct spdk_iscsi_conn *conn), 0);
 
-DEFINE_STUB(spdk_iscsi_read_pdu, int,
-	    (struct spdk_iscsi_conn *conn, struct spdk_iscsi_pdu **_pdu), 0);
+DEFINE_STUB(spdk_iscsi_handle_incoming_pdus, int, (struct spdk_iscsi_conn *conn), 0);
 
 DEFINE_STUB_V(spdk_free_sess, (struct spdk_iscsi_sess *sess));
 

@@ -42,6 +42,7 @@ JSON_LIBS := json jsonrpc rpc
 
 DEPDIRS-env_ocf :=
 DEPDIRS-log :=
+DEPDIRS-rte_vhost :=
 
 DEPDIRS-ioat := log
 DEPDIRS-sock := log
@@ -77,7 +78,10 @@ DEPDIRS-nvmf := log sock util nvme thread $(JSON_LIBS) trace bdev
 DEPDIRS-scsi := log util thread $(JSON_LIBS) trace bdev
 
 DEPDIRS-iscsi := log sock util conf thread $(JSON_LIBS) trace event scsi
-DEPDIRS-vhost := log util conf thread $(JSON_LIBS) bdev event scsi
+DEPDIRS-vhost = log util conf thread $(JSON_LIBS) bdev event scsi
+ifeq ($(CONFIG_VHOST_INTERNAL_LIB),y)
+DEPDIRS-vhost += rte_vhost
+endif
 
 # ------------------------------------------------------------------------
 # Start module/ directory - This section extends the organizational pattern from
@@ -92,6 +96,9 @@ BDEV_DEPS_CONF_THREAD = $(BDEV_DEPS) conf thread
 
 # module/blob
 DEPDIRS-blob_bdev := log thread bdev
+
+# module/blobfs
+DEPDIRS-blobfs_bdev := $(BDEV_DEPS_THREAD) blob_bdev blobfs
 
 # module/copy
 DEPDIRS-copy_ioat := log ioat conf thread $(JSON_LIBS) copy
@@ -130,15 +137,21 @@ DEPDIRS-bdev_virtio := $(BDEV_DEPS_CONF_THREAD) virtio
 
 # module/event
 # module/event/app
-DEPDIRS-app_rpc := event $(JSON_LIBS) thread util
+DEPDIRS-app_rpc := log util thread event $(JSON_LIBS)
 
-#module/event/subsystems
-DEPDIRS-event_bdev := bdev event
+# module/event/subsystems
+# These depdirs include subsystem interdependencies which
+# are not related to symbols, but are defined directly in
+# the SPDK event subsystem code.
 DEPDIRS-event_copy := copy event
-DEPDIRS-event_iscsi := event iscsi
-DEPDIRS-event_nbd := event nbd
 DEPDIRS-event_net := sock net event
-DEPDIRS-event_nvmf := $(BDEV_DEPS_CONF_THREAD) event nvme nvmf
-DEPDIRS-event_scsi := event scsi
-DEPDIRS-event_vhost := event vhost
-DEPDIRS-event_vmd := conf vmd event
+DEPDIRS-event_vmd := vmd conf $(JSON_LIBS) event
+
+DEPDIRS-event_bdev := bdev event event_copy event_vmd
+
+DEPDIRS-event_nbd := event nbd event_bdev
+DEPDIRS-event_nvmf := $(BDEV_DEPS_CONF_THREAD) event nvme nvmf event_bdev
+DEPDIRS-event_scsi := event scsi event_bdev
+
+DEPDIRS-event_iscsi := event iscsi event_scsi
+DEPDIRS-event_vhost := event vhost event_scsi

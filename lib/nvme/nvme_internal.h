@@ -331,6 +331,14 @@ struct nvme_async_event_request {
 	struct spdk_nvme_cpl		cpl;
 };
 
+enum nvme_qpair_state {
+	NVME_QPAIR_DISABLED,
+	NVME_QPAIR_CONNECTING,
+	NVME_QPAIR_CONNECTED,
+	NVME_QPAIR_ENABLING,
+	NVME_QPAIR_ENABLED,
+};
+
 struct spdk_nvme_qpair {
 	struct spdk_nvme_ctrlr		*ctrlr;
 
@@ -338,8 +346,7 @@ struct spdk_nvme_qpair {
 
 	uint8_t				qprio;
 
-	uint8_t				is_enabled : 1;
-	uint8_t				is_connecting: 1;
+	uint8_t				state : 3;
 
 	/*
 	 * Members for handling IO qpair deletion inside of a completion context.
@@ -348,6 +355,8 @@ struct spdk_nvme_qpair {
 	 */
 	uint8_t				in_completion_context : 1;
 	uint8_t				delete_after_completion_context: 1;
+
+	uint8_t				transport_qp_is_failed: 1;
 
 	/*
 	 * Set when no deletion notification is needed. For example, the process
@@ -433,9 +442,9 @@ enum nvme_ctrlr_state {
 	NVME_CTRLR_STATE_ENABLE_WAIT_FOR_READY_1,
 
 	/**
-	 * Enable the Admin queue of the controller.
+	 * Reset the Admin queue of the controller.
 	 */
-	NVME_CTRLR_STATE_ENABLE_ADMIN_QUEUE,
+	NVME_CTRLR_STATE_RESET_ADMIN_QUEUE,
 
 	/**
 	 * Identify Controller command will be sent to then controller.
@@ -559,7 +568,7 @@ enum nvme_ctrlr_state {
 	NVME_CTRLR_STATE_ERROR
 };
 
-#define NVME_TIMEOUT_INFINITE	UINT64_MAX
+#define NVME_TIMEOUT_INFINITE	0
 
 /*
  * Used to track properties for all processes accessing the controller.
@@ -701,6 +710,16 @@ struct spdk_nvme_ctrlr {
 
 	STAILQ_HEAD(, nvme_request)	queued_aborts;
 	uint32_t			outstanding_aborts;
+
+	/* CB to notify the user when the ctrlr is removed/failed. */
+	spdk_nvme_remove_cb			remove_cb;
+	void					*cb_ctx;
+
+	struct spdk_nvme_qpair		*external_io_msgs_qpair;
+	pthread_mutex_t			external_io_msgs_lock;
+	struct spdk_ring		*external_io_msgs;
+
+	STAILQ_HEAD(, nvme_io_msg_producer) io_producers;
 };
 
 struct spdk_nvme_probe_ctx {
@@ -827,6 +846,7 @@ int	nvme_ctrlr_construct(struct spdk_nvme_ctrlr *ctrlr);
 void	nvme_ctrlr_destruct_finish(struct spdk_nvme_ctrlr *ctrlr);
 void	nvme_ctrlr_destruct(struct spdk_nvme_ctrlr *ctrlr);
 void	nvme_ctrlr_fail(struct spdk_nvme_ctrlr *ctrlr, bool hot_remove);
+int	nvme_ctrlr_reset(struct spdk_nvme_ctrlr *ctrlr);
 int	nvme_ctrlr_process_init(struct spdk_nvme_ctrlr *ctrlr);
 void	nvme_ctrlr_connected(struct spdk_nvme_probe_ctx *probe_ctx,
 			     struct spdk_nvme_ctrlr *ctrlr);
@@ -838,13 +858,12 @@ int	nvme_ctrlr_get_vs(struct spdk_nvme_ctrlr *ctrlr, union spdk_nvme_vs_register
 int	nvme_ctrlr_get_cmbsz(struct spdk_nvme_ctrlr *ctrlr, union spdk_nvme_cmbsz_register *cmbsz);
 void	nvme_ctrlr_init_cap(struct spdk_nvme_ctrlr *ctrlr, const union spdk_nvme_cap_register *cap,
 			    const union spdk_nvme_vs_register *vs);
-int	nvme_qpair_init(struct spdk_nvme_qpair *qpair, uint16_t id,
-			struct spdk_nvme_ctrlr *ctrlr,
-			enum spdk_nvme_qprio qprio,
-			uint32_t num_requests);
+void nvme_ctrlr_disconnect_qpair(struct spdk_nvme_qpair *qpair);
+int nvme_qpair_init(struct spdk_nvme_qpair *qpair, uint16_t id,
+		    struct spdk_nvme_ctrlr *ctrlr,
+		    enum spdk_nvme_qprio qprio,
+		    uint32_t num_requests);
 void	nvme_qpair_deinit(struct spdk_nvme_qpair *qpair);
-void	nvme_qpair_enable(struct spdk_nvme_qpair *qpair);
-void	nvme_qpair_disable(struct spdk_nvme_qpair *qpair);
 void	nvme_qpair_complete_error_reqs(struct spdk_nvme_qpair *qpair);
 int	nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair,
 				  struct nvme_request *req);
@@ -858,6 +877,7 @@ void	nvme_ns_destruct(struct spdk_nvme_ns *ns);
 int	nvme_fabric_ctrlr_set_reg_4(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, uint32_t value);
 int	nvme_fabric_ctrlr_set_reg_8(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, uint64_t value);
 int	nvme_fabric_ctrlr_get_reg_4(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, uint32_t *value);
+int	nvme_fabric_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx, bool direct_connect);
 int	nvme_fabric_ctrlr_get_reg_8(struct spdk_nvme_ctrlr *ctrlr, uint32_t offset, uint64_t *value);
 int	nvme_fabric_ctrlr_discover(struct spdk_nvme_ctrlr *ctrlr,
 				   struct spdk_nvme_probe_ctx *probe_ctx);
@@ -966,6 +986,18 @@ nvme_free_request(struct nvme_request *req)
 	assert(req->qpair != NULL);
 
 	STAILQ_INSERT_HEAD(&req->qpair->free_req, req, stailq);
+}
+
+static inline void
+nvme_qpair_set_state(struct spdk_nvme_qpair *qpair, enum nvme_qpair_state state)
+{
+	qpair->state = state;
+}
+
+static inline bool
+nvme_qpair_state_equals(struct spdk_nvme_qpair *qpair, enum nvme_qpair_state state)
+{
+	return qpair->state == state;
 }
 
 static inline void
