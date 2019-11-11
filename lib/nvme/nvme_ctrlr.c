@@ -2201,7 +2201,11 @@ nvme_ctrlr_process_init(struct spdk_nvme_ctrlr *ctrlr)
 		break;
 
 	case NVME_CTRLR_STATE_CONFIGURE_AER:
-		rc = nvme_ctrlr_configure_aer(ctrlr);
+		//wgao disable host side AER for distributed storage rc = nvme_ctrlr_configure_aer(ctrlr);
+		rc = 0;//fake done it without enable AER
+		nvme_ctrlr_set_state(ctrlr, NVME_CTRLR_STATE_SET_SUPPORTED_LOG_PAGES,
+			                 ctrlr->opts.admin_timeout_ms);//skip AER configure step
+
 		break;
 
 	case NVME_CTRLR_STATE_WAIT_FOR_CONFIGURE_AER:
